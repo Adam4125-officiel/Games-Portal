@@ -1,0 +1,61 @@
+/* ============================================================
+   steam-request-portal — design tokens
+   Carried over as-is from status-portal (same author, same server).
+   Aesthetic: network control room / monitoring rack.
+   Don't invent new colors/fonts — add a token here if something's missing.
+   ============================================================ */
+:root {
+  /* Colors */
+  --bg-void: #0b0d12;
+  --bg-panel: #12151c;
+  --bg-panel-raised: #181c25;
+  --border: #232833;
+  --border-soft: #1b1f29;
+  --text-primary: #e4e7ec;
+  --text-dim: #7b8494;
+  --text-faint: #4d5566;
+  --brand: #6c8cff;
+  --brand-dim: #3d4d8f;
+
+  --ok: #3ddc97;
+  --ok-dim: #1c4a3a;
+  --warn: #ffb545;
+  --warn-dim: #4a3a1c;
+  --crit: #ff5470;
+  --crit-dim: #4a1c28;
+  --maint: #a08bff;
+  --maint-dim: #372c66;
+
+  /* Typography */
+  --font-display: "Space Grotesk", "Inter", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+:root[data-theme="light"] {
+  --bg-void: #f3f4f7;
+  --bg-panel: #ffffff;
+  --bg-panel-raised: #eef0f4;
+  --border: #dde1e8;
+  --border-soft: #e8eaf0;
+  --text-primary: #181b22;
+  --text-dim: #4f5766;
+  --text-faint: #838d9e;
+  --brand: #3355dd;
+  --brand-dim: #dde5fc;
+
+  --ok: #178a5c;
+  --ok-dim: #dcf3ea;
+  --warn: #a8660a;
+  --warn-dim: #faecd7;
+  --crit: #c22f4c;
+  --crit-dim: #fbdee4;
+  --maint: #6947cf;
+  --maint-dim: #ece6fc;
+}
+
+/* Rest of the stylesheet (layout, components) intentionally left for the actual
+   build — this file only seeds the shared tokens above. */
