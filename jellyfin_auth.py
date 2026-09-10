@@ -26,12 +26,25 @@ DEVICE_NAME = "Games Portal"
 DEVICE_ID = "games-portal"
 
 
-def _auth_header():
-    """Jellyfin's client-identification header, sent as both Authorization and
-    X-Emby-Authorization: modern Jellyfin reads the former, older/Emby-derived
-    builds read the latter - sending both costs nothing."""
-    value = (f'MediaBrowser Client="{CLIENT_NAME}", Device="{DEVICE_NAME}", '
-             f'DeviceId="{DEVICE_ID}", Version="{config.VERSION}"')
+def _auth_header(token=None):
+    """Jellyfin's client-identification header - a `Token` field is appended when
+    one is available (e.g. to revoke it below), rather than sent via the separate
+    X-Emby-Token header.
+
+    Jellyfin 12.0 (2026-09) disables legacy authorization by default and migrates
+    existing installs to match: X-Emby-Token, X-Emby-Authorization, the lowercase
+    api_key query param, and the "Emby" auth scheme all stop being read unless an
+    admin explicitly re-enables EnableLegacyAuthorization. The plain `Authorization`
+    header with the `MediaBrowser` scheme is unaffected - it's been checked first,
+    unconditionally, since at least Jellyfin 10.6 - so sending Client/Device/
+    DeviceId/Version/Token there instead is both the fix for 12.0 and backward-
+    compatible with everything older. Sent as both Authorization and
+    X-Emby-Authorization anyway (costs nothing) for the rare very old/Emby-derived
+    build that only reads the latter."""
+    parts = f'Client="{CLIENT_NAME}", Device="{DEVICE_NAME}", DeviceId="{DEVICE_ID}", Version="{config.VERSION}"'
+    if token:
+        parts += f', Token="{token}"'
+    value = f"MediaBrowser {parts}"
     return {"Authorization": value, "X-Emby-Authorization": value}
 
 
@@ -93,12 +106,17 @@ def _revoke_token(base_url, token):
     """Best-effort: a failure here means one stale device session left behind in
     Jellyfin's own device list, which is untidy but harmless - it must never turn
     a successful sign-in into a failed one. The token itself is discarded either
-    way; see the module docstring for why it's never kept."""
+    way; see the module docstring for why it's never kept.
+
+    Authenticates via the Token field in the Authorization header (see
+    _auth_header), not the legacy X-Emby-Token header - Jellyfin 12.0+ ignores the
+    latter by default, which would otherwise make this silently no-op forever
+    against a current server without ever raising an error here."""
     if not token:
         return
     try:
         requests.post(f"{base_url}/Sessions/Logout",
-                       headers={"X-Emby-Token": token, **_auth_header()},
+                       headers=_auth_header(token=token),
                        timeout=config.JELLYFIN_AUTH_TIMEOUT_SECONDS)
     except requests.RequestException as e:
         _logger.info("Could not revoke the short-lived Jellyfin token after sign-in: %s", e)

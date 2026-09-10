@@ -91,3 +91,28 @@ def test_authenticate_never_persists_the_access_token(monkeypatch):
     monkeypatch.setattr(jellyfin_auth.requests, "post", fake_post)
     result = jellyfin_auth.authenticate("alice", "correct-password")
     assert "super-secret-token" not in str(result)
+
+
+def test_revoke_uses_the_authorization_header_not_x_emby_token(monkeypatch):
+    """Jellyfin 12.0 (2026-09) disables legacy authorization by default, which
+    means the X-Emby-Token header is silently ignored - the revoke call must
+    authenticate via a Token field inside the (always-read) Authorization header
+    instead, or it would silently stop working against any current server."""
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+    logout_calls = []
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/Users/AuthenticateByName"):
+            return _FakeResponse({"User": {"Id": "abc123", "Name": "alice", "Policy": {}},
+                                   "AccessToken": "tok-xyz"}, status_code=200)
+        logout_calls.append(kwargs)
+        return _FakeResponse(status_code=204)
+
+    monkeypatch.setattr(jellyfin_auth.requests, "post", fake_post)
+    jellyfin_auth.authenticate("alice", "correct-password")
+
+    assert len(logout_calls) == 1
+    headers = logout_calls[0]["headers"]
+    assert "X-Emby-Token" not in headers
+    assert 'Token="tok-xyz"' in headers["Authorization"]
+    assert headers["Authorization"].startswith("MediaBrowser ")
