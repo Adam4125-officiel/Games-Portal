@@ -35,6 +35,11 @@ file", that belongs in a different project.
 - Storage: **SQLite**, single file under `instance/`, created automatically.
 - Steam data: the public, unauthenticated `store.steampowered.com/api/storesearch`
   endpoint — no API key needed, no scraping.
+- Self-update (`updater.py`/`update.py`, ported from status-portal): checks/downloads
+  from this repo's own GitHub Releases API, unauthenticated - same as status-portal,
+  which works there because that repo is public. **This repo must stay public for
+  that to keep working** - going private again would 404 every check/download with
+  no code change needed to reproduce it (see docs/HISTORY.md, 2026-09-10).
 
 ## Open decisions — see `ROADMAP.md`
 
@@ -159,12 +164,15 @@ stale token and looks exactly like a failure.
     db.py                   # SQLite layer
     steam.py                # storesearch + appdetails client
     jellyfin_auth.py        # visitor identity — live Jellyfin credential check
+    updater.py               # self-update: check/download/verify/backup/replace/rollback
+    update.py                # CLI wrapper around updater.py, usable when the web UI is broken
     scanner.py               # games-folder scan + matching — not built yet, waits on ROADMAP.md
     requirements.txt / requirements-dev.txt
     .env.example
     Dockerfile / docker-compose.yml / .dockerignore
     static/css/style.css    # design tokens + layout, carried over from status-portal
     static/js/theme.js      # light/dark toggle
-    templates/
-    tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, app.py routes
-    instance/                # portal.db + secret_key, created automatically — gitignored
+    static/js/admin_update.js  # confirm() guard on the "Update now" button
+    templates/                  # admin_base.html holds the shared admin nav shell
+    tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, updater.py, app.py routes
+    instance/                # portal.db + secret_key + update_backups/, created automatically — gitignored

@@ -5,6 +5,69 @@ verified against a real deployment (and when). Rules belong in `CLAUDE.md`; the
 stories behind them belong here. When `CLAUDE.md` gains a rule because something
 broke, it links to the write-up here instead of retelling it inline.
 
+## 2026-09-10 — Self-update system ported from status-portal; caught a real archive-validation gap and a private-repo blocker along the way
+
+Added `updater.py`/`update.py` - check GitHub for a newer release, download and
+verify it, back up and replace this app's own files, roll back on failure, and
+a CLI (`update.py apply`/`rollback`/`list-backups`/`channel`) usable over SSH
+when the web UI itself is broken. Ported near-verbatim from status-portal's
+module of the same name, since the whole point was parity with that project's
+existing, hardened design - the security posture (hardcoded repo constant,
+HTTPS-only with cert verification, download host allow-list re-checked after
+redirects, size/SHA-256 verification, zip-slip and protected-path checks,
+atomic file replacement, automatic pre-restart rollback) is unchanged from
+there. Scoped down for what this app actually has: no `scheduler.py` yet, so
+the periodic check is a plain daemon thread instead of a registered task; no
+2FA, so the in-app "Update now" button is gated the same as every other admin
+POST here (login + CSRF + a client-side confirm()) instead of status-portal's
+step-up TOTP requirement.
+
+**A real gap turned up while porting the archive-path validation, not just
+while writing tests against the ported code as-is.** `_archive_members()`
+strips a shared top-level directory when every member has one, to handle
+GitHub's auto-generated zipball layout - but a *single-entry* archive made
+entirely of `"../evil.py"` or `"/etc/passwd"` also technically satisfies
+"every member shares one first segment" (`".."` or `""`), so that segment got
+treated as a legitimate directory to strip *before* the parent-directory and
+absolute-path checks ever ran, defusing the very thing those checks exist to
+catch. Traced all the way through: this was not an actual directory-escape
+vulnerability, because the final `destination.startswith(APP_ROOT)` check two
+guards later is an independent backstop that still confines the write - but it
+meant a malformed archive got silently coerced into landing somewhere odd
+inside the app root instead of aborting loudly, which is the code's own stated
+design goal. Fixed by excluding `""` and `".."` as strip-prefix candidates, and
+by checking for a leading `/` before any normalisation could hide it (the
+original also ran `os.path.isabs()` *after* an unconditional `.lstrip("/")`,
+which meant that check could never actually fire for a POSIX-style absolute
+path). Both are `tests/test_updater.py` regression cases now. **This identical
+logic exists unchanged in status-portal's own `updater.py`** - worth an
+equivalent fix there, flagged to the user rather than touched directly since
+that's a different repo.
+
+**The live smoke test found something more fundamental: this repo was
+private.** `update.py check` against the real, live GitHub repo 404'd -
+unauthenticated calls to a private repo's releases API 404 rather than 403
+(GitHub doesn't reveal that a private repo exists to someone without access).
+status-portal's identical unauthenticated design works *there* only because
+that repo is public; nothing about this being "the same system as
+status-portal" made that true here too. Confirmed live: `gh api` (this
+session's authenticated token) could see the repo fine, while a plain
+`requests.get()` - exactly what `updater.py` uses, deliberately, per its own
+"never configurable, no credentials" security posture for the update source -
+could not. Put to the user as a real three-way decision (make the repo public
+/ add a `PORTAL_GITHUB_TOKEN` and accept a new credential surface / ship it
+non-functional for now) rather than guessed at, since the consequences differ
+enough that it wasn't this session's call to make alone. Chosen: make the repo
+public. The full git history was audited first (`git log --all` for `.env`,
+`secret_key`, `instance/`, and password/key/token-shaped strings) and came back
+clean, so there was nothing to worry about being exposed - the actual
+visibility flip needs a token with repo-admin rights this session's own
+`GITHUB_TOKEN` doesn't have, so it's still pending the user's own action as of
+this write-up. Once it's flipped, the update-check/download path still needs a
+real live run against actual GitHub releases to be confirmed end-to-end -
+everything up to that point has only been verified against mocked HTTP
+responses and a real filesystem in `tmp_path`.
+
 ## 2026-09-10 — Jellyfin 12.0 disabled legacy authorization; fixed before it ever shipped broken
 
 Jellyfin 12.0 released 2026-09-08 (jumping straight from 10.11.x - there's no
