@@ -1,3 +1,5 @@
+import time
+
 import app as app_module
 
 
@@ -163,3 +165,104 @@ def test_csrf_protection_rejects_missing_token(isolated_db):
             assert resp.status_code == 400
     finally:
         app_module.app.config["TESTING"] = True
+
+
+# ---------------------------------------------------------------------------
+# Deleting requests (admin)
+# ---------------------------------------------------------------------------
+def test_admin_delete_request_requires_login(client):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    resp = client.post(f"/admin/requests/{rid}/delete")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+    assert db.get_request(rid) is not None
+
+
+def test_admin_delete_request_removes_it(admin_client):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    resp = admin_client.post(f"/admin/requests/{rid}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Deleted" in resp.data
+    assert db.get_request(rid) is None
+
+
+def test_admin_delete_request_404s_for_unknown_id(admin_client):
+    resp = admin_client.post("/admin/requests/999999/delete")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Visitor's own requests ("My requests" / account page)
+# ---------------------------------------------------------------------------
+def test_account_requires_visitor_login(client):
+    resp = client.get("/account")
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+
+
+def test_account_shows_only_that_visitors_requests(visitor_session, monkeypatch):
+    import db
+    import steam
+
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                        lambda appid: {"appid": appid, "name": "Half-Life", "icon_url": "",
+                                       "short_description": ""})
+    visitor_session.post("/request", data={"appid": "70", "next": "/"})
+    db.create_request(220, "Half-Life 2", "", "", "someone-else", "Bob")
+
+    resp = visitor_session.get("/account")
+    assert resp.status_code == 200
+    assert b"Half-Life" in resp.data
+    assert b"Half-Life 2" not in resp.data
+
+
+def test_account_empty_state(visitor_session):
+    resp = visitor_session.get("/account")
+    assert b"haven't requested" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Admin session idle timeout
+# ---------------------------------------------------------------------------
+def test_admin_session_survives_within_the_timeout(admin_client, monkeypatch):
+    import db
+    db.set_setting("admin_session_timeout_hours", "1")
+    resp = admin_client.get("/admin/requests")
+    assert resp.status_code == 200
+
+
+def test_admin_session_expires_after_the_configured_timeout(admin_client):
+    import db
+    db.set_setting("admin_session_timeout_hours", "1")
+    with admin_client.session_transaction() as sess:
+        sess["admin_last_seen"] = time.time() - 3700  # just over 1 hour ago
+
+    resp = admin_client.get("/admin/requests", follow_redirects=True)
+    assert b"session expired" in resp.data
+    assert b"Set admin password" not in resp.data  # still not first-run
+
+    with admin_client.session_transaction() as sess:
+        assert "logged_in" not in sess
+
+
+def test_admin_session_timeout_of_zero_disables_it(admin_client):
+    import db
+    db.set_setting("admin_session_timeout_hours", "0")
+    with admin_client.session_transaction() as sess:
+        sess["admin_last_seen"] = time.time() - 999999
+
+    resp = admin_client.get("/admin/requests")
+    assert resp.status_code == 200
+
+
+def test_admin_session_last_seen_is_touched_on_activity(admin_client):
+    old = time.time() - 120
+    with admin_client.session_transaction() as sess:
+        sess["admin_last_seen"] = old
+
+    admin_client.get("/admin/requests")
+
+    with admin_client.session_transaction() as sess:
+        assert sess["admin_last_seen"] > old

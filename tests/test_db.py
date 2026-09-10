@@ -58,3 +58,27 @@ def test_get_active_request_for_appid(isolated_db):
     db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
     found = db.get_active_request_for_appid(70)
     assert found["name"] == "Half-Life"
+
+
+def test_list_requests_for_user_scopes_to_that_user_only(isolated_db):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.create_request(220, "Half-Life 2", "", "", "jf-2", "Bob")
+
+    alice_requests = db.list_requests_for_user("jf-1")
+    assert len(alice_requests) == 1
+    assert alice_requests[0]["name"] == "Half-Life"
+    assert db.list_requests_for_user("someone-else") == []
+
+
+def test_delete_request_removes_the_row(isolated_db):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    assert db.delete_request(rid) is True
+    assert db.get_request(rid) is None
+    assert db.list_requests() == []
+
+
+def test_delete_request_returns_false_for_unknown_id(isolated_db):
+    import db
+    assert db.delete_request(999999) is False

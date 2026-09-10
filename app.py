@@ -111,6 +111,7 @@ def is_first_run():
 def _start_admin_session():
     session.permanent = True
     session["logged_in"] = True
+    session["admin_last_seen"] = time.time()
 
 
 def login_required(f):
@@ -120,6 +121,48 @@ def login_required(f):
             return redirect(url_for("admin_login", next=request.path))
         return f(*args, **kwargs)
     return wrapper
+
+
+# How long an idle admin session survives before it's expired server-side, in
+# hours. This is the *upper bound* the DB setting (admin_session_timeout_hours,
+# editable at /admin/about) is clamped to.
+DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS = 24
+MAX_ADMIN_SESSION_TIMEOUT_HOURS = 24 * 30
+# The last_seen stamp is only rewritten once per this many seconds, so a
+# refresh doesn't re-sign and re-send the cookie on literally every request.
+SESSION_TOUCH_INTERVAL_SECONDS = 60
+
+
+def _admin_session_timeout_seconds():
+    """None = no idle timeout configured (0 hours = disabled)."""
+    raw = db.get_setting("admin_session_timeout_hours", str(DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS))
+    hours = int(raw) if raw.isdigit() else DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS
+    if hours <= 0:
+        return None
+    return min(hours, MAX_ADMIN_SESSION_TIMEOUT_HOURS) * 3600
+
+
+@app.before_request
+def _enforce_admin_session_timeout():
+    """Server-side idle expiry for the admin session, and the sliding-window
+    touch that feeds it. Only ever pops the admin-specific keys - never
+    session.clear() - so a visitor session in the same browser (or the CSRF
+    token) is untouched. Registered as a before_request hook so it runs ahead
+    of every view, including login_required's own check - an expired session
+    reads as "not logged in" from that point on, no separate redirect needed
+    here."""
+    if not session.get("logged_in"):
+        return
+    timeout = _admin_session_timeout_seconds()
+    now = time.time()
+    last_seen = session.get("admin_last_seen")
+    if timeout is not None and last_seen and (now - last_seen) > timeout:
+        session.pop("logged_in", None)
+        session.pop("admin_last_seen", None)
+        flash("Your admin session expired from inactivity - please sign in again.", "error")
+        return
+    if last_seen is None or (now - last_seen) >= SESSION_TOUCH_INTERVAL_SECONDS:
+        session["admin_last_seen"] = now
 
 
 _login_state = {"failures": 0, "locked_until": 0.0}
@@ -315,6 +358,14 @@ def user_logout():
     return redirect(url_for("index"))
 
 
+@app.route("/account")
+@user_login_required
+def account():
+    user = current_user()
+    my_requests = db.list_requests_for_user(user["id"])
+    return render_template("account.html", requests=my_requests)
+
+
 # ---------------------------------------------------------------------------
 # Admin
 # ---------------------------------------------------------------------------
@@ -383,6 +434,17 @@ def admin_update_request(request_id):
     else:
         db.update_request_status(request_id, status, note)
         flash("Request updated.", "success")
+    return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
+@app.route("/admin/requests/<int:request_id>/delete", methods=["POST"])
+@login_required
+def admin_delete_request(request_id):
+    row = db.get_request(request_id)
+    if row is None:
+        abort(404)
+    db.delete_request(request_id)
+    flash(f'Deleted "{row["name"]}".', "success")
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
 

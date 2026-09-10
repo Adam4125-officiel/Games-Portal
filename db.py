@@ -136,6 +136,23 @@ def list_requests(status=None):
     return [dict(row) for row in rows]
 
 
+def list_requests_for_user(requested_by_id):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM requests WHERE requested_by_id=? ORDER BY created_at DESC",
+                         (requested_by_id,)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def delete_request(request_id):
+    conn = get_db()
+    cur = conn.execute("DELETE FROM requests WHERE id=?", (request_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
 def get_request(request_id):
     conn = get_db()
     row = conn.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()

@@ -57,17 +57,24 @@
                 <p class="request-row__note">Note: {{ r.admin_note }}</p>
               {% endif %}
             </div>
-            <form class="request-row__form" method="POST"
-                  action="{{ url_for('admin_update_request', request_id=r.id, status=status_filter) }}">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <select name="status">
-                {% for s in statuses %}
-                  <option value="{{ s }}" {{ 'selected' if s == r.status }}>{{ s }}</option>
-                {% endfor %}
-              </select>
-              <input type="text" name="admin_note" placeholder="Note (optional)" value="{{ r.admin_note }}" maxlength="500">
-              <button type="submit" class="btn small">Update</button>
-            </form>
+            <div class="request-row__actions">
+              <form class="request-row__form" method="POST"
+                    action="{{ url_for('admin_update_request', request_id=r.id, status=status_filter) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <select name="status">
+                  {% for s in statuses %}
+                    <option value="{{ s }}" {{ 'selected' if s == r.status }}>{{ s }}</option>
+                  {% endfor %}
+                </select>
+                <input type="text" name="admin_note" placeholder="Note (optional)" value="{{ r.admin_note }}" maxlength="500">
+                <button type="submit" class="btn small">Update</button>
+              </form>
+              <form method="POST" action="{{ url_for('admin_delete_request', request_id=r.id, status=status_filter) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn small danger"
+                        data-confirm="Delete the request for &quot;{{ r.name }}&quot;? This can't be undone.">Delete</button>
+              </form>
+            </div>
           </div>
         {% endfor %}
       </div>
