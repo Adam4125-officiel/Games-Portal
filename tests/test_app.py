@@ -163,3 +163,119 @@ def test_csrf_protection_rejects_missing_token(isolated_db):
             assert resp.status_code == 400
     finally:
         app_module.app.config["TESTING"] = True
+
+
+# ---------------------------------------------------------------------------
+# About / self-update
+# ---------------------------------------------------------------------------
+def test_admin_about_requires_login(client):
+    resp = client.get("/admin/about")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+
+
+def test_admin_about_renders_before_any_check(admin_client):
+    resp = admin_client.get("/admin/about")
+    assert resp.status_code == 200
+    assert b"Not checked yet" in resp.data
+
+
+def test_admin_about_check_updates_the_cache_and_flashes_the_result(admin_client, monkeypatch):
+    import updater
+
+    def fake_refresh(*a, **k):
+        return {"ok": True, "current": "1.0.0", "latest": "2.0.0", "update_available": True}
+
+    monkeypatch.setattr(updater, "refresh_update_cache_if_stale", fake_refresh)
+    resp = admin_client.post("/admin/about/check", follow_redirects=True)
+    assert b"Update available" in resp.data
+
+
+def test_admin_about_check_reports_an_error_without_crashing(admin_client, monkeypatch):
+    import updater
+
+    def fake_refresh(*a, **k):
+        return {"ok": False, "error": "Could not reach GitHub: timeout"}
+
+    monkeypatch.setattr(updater, "refresh_update_cache_if_stale", fake_refresh)
+    resp = admin_client.post("/admin/about/check", follow_redirects=True)
+    assert b"Could not reach GitHub" in resp.data
+
+
+def test_admin_about_settings_saves_channel_and_check_enabled(admin_client):
+    import updater
+    resp = admin_client.post("/admin/about/settings",
+                              data={"update_channel": "unstable"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert updater.get_channel() == "unstable"
+    assert updater.update_check_enabled() is False  # checkbox omitted = unchecked
+
+
+def test_admin_about_settings_rejects_an_unknown_channel(admin_client):
+    import updater
+    admin_client.post("/admin/about/settings", data={"update_channel": "bogus"})
+    assert updater.get_channel() == "stable"
+
+
+def test_admin_update_refuses_when_disabled_by_config(admin_client, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "ENABLE_INAPP_UPDATE", False)
+    resp = admin_client.post("/admin/about/update", follow_redirects=True)
+    assert b"disabled" in resp.data.lower()
+
+
+def test_admin_update_refuses_on_a_git_checkout(admin_client, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "IS_GIT_CHECKOUT", True)
+    resp = admin_client.post("/admin/about/update", follow_redirects=True)
+    assert b"git checkout" in resp.data.lower()
+
+
+def test_admin_update_applies_and_triggers_a_restart(admin_client, monkeypatch):
+    import config as config_module
+    import updater
+
+    monkeypatch.setattr(config_module, "IS_GIT_CHECKOUT", False)
+    restart_calls = []
+    monkeypatch.setattr(app_module, "_restart_process", lambda: restart_calls.append(1))
+    monkeypatch.setattr(updater, "perform_update",
+                        lambda **k: {"applied": True, "current": "1.0.0", "latest": "2.0.0",
+                                     "backup": "some-backup"})
+    marker_calls = []
+    monkeypatch.setattr(updater, "write_pending_marker", lambda *a: marker_calls.append(a))
+
+    resp = admin_client.post("/admin/about/update", follow_redirects=True)
+    assert resp.status_code == 200
+    assert restart_calls == [1]
+    assert marker_calls == [("some-backup", "2.0.0")]
+
+
+def test_admin_update_reports_a_failed_update_without_restarting(admin_client, monkeypatch):
+    import config as config_module
+    import updater
+
+    monkeypatch.setattr(config_module, "IS_GIT_CHECKOUT", False)
+    restart_calls = []
+    monkeypatch.setattr(app_module, "_restart_process", lambda: restart_calls.append(1))
+
+    def fake_perform_update(**k):
+        raise updater.UpdateError("Could not reach GitHub")
+
+    monkeypatch.setattr(updater, "perform_update", fake_perform_update)
+    resp = admin_client.post("/admin/about/update", follow_redirects=True)
+    assert b"Update failed" in resp.data
+    assert restart_calls == []
+
+
+def test_admin_update_no_op_when_already_up_to_date_does_not_restart(admin_client, monkeypatch):
+    import config as config_module
+    import updater
+
+    monkeypatch.setattr(config_module, "IS_GIT_CHECKOUT", False)
+    restart_calls = []
+    monkeypatch.setattr(app_module, "_restart_process", lambda: restart_calls.append(1))
+    monkeypatch.setattr(updater, "perform_update",
+                        lambda **k: {"applied": False, "reason": "already up to date"})
+    resp = admin_client.post("/admin/about/update", follow_redirects=True)
+    assert b"Nothing to update" in resp.data
+    assert restart_calls == []

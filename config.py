@@ -126,3 +126,22 @@ JELLYFIN_URL = os.environ.get("PORTAL_JELLYFIN_URL", "").strip()
 # reusing the Steam search timeout above - someone is sitting there waiting on
 # this one, and a Jellyfin busy transcoding can be slow to answer.
 JELLYFIN_AUTH_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_JELLYFIN_AUTH_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
+# Self-update (see updater.py / update.py)
+# ---------------------------------------------------------------------------
+# How often the background checker re-asks GitHub what the latest release is,
+# in seconds. 6h by default: GitHub's unauthenticated API allows 60 requests/hour
+# per IP and nothing here benefits from knowing about a new release sooner than
+# that. Whether checking runs at all is a routine admin toggle (the
+# update_check_enabled DB setting, default on) rather than this - this is just
+# the interval once it's on.
+UPDATE_CHECK_INTERVAL_SECONDS = int(os.environ.get("PORTAL_UPDATE_CHECK_INTERVAL_SECONDS", "21600"))
+
+# Kill-switch for the in-app "Update now" button (the standalone update.py script
+# over SSH is unaffected and always works). Deliberately an env var rather than a
+# DB setting: the risk it mitigates is "someone got into the admin panel", and a
+# toggle that same attacker could flip from that same panel would mitigate
+# nothing. Changing this needs filesystem access to the host plus a restart.
+# Defaults to enabled; set it to false to require SSH access for every update.
+ENABLE_INAPP_UPDATE = os.environ.get("PORTAL_ENABLE_INAPP_UPDATE", "true").lower() != "false"

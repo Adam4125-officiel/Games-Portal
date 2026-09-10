@@ -4,7 +4,10 @@ Run with: python app.py
 Admin panel: /admin (password is set on first launch)
 """
 import logging
+import os
 import secrets
+import sys
+import threading
 import time
 from datetime import timedelta
 from functools import wraps
@@ -16,6 +19,7 @@ import config
 import db
 import jellyfin_auth
 import steam
+import updater
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 _logger = logging.getLogger(__name__)
@@ -368,7 +372,7 @@ def admin_requests():
     status_filter = request.args.get("status", "")
     requests_list = db.list_requests(status=status_filter or None)
     return render_template("admin_requests.html", requests=requests_list, status_filter=status_filter,
-                            statuses=db.REQUEST_STATUSES)
+                            statuses=db.REQUEST_STATUSES, active="requests")
 
 
 @app.route("/admin/requests/<int:request_id>/status", methods=["POST"])
@@ -386,7 +390,175 @@ def admin_update_request(request_id):
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
 
+# ---------------------------------------------------------------------------
+# About / self-update (see updater.py for everything that actually happens)
+# ---------------------------------------------------------------------------
+@app.route("/admin/about")
+@login_required
+def admin_about():
+    import platform
+    return render_template(
+        "admin_about.html",
+        active="about",
+        version_display=config.VERSION_DISPLAY,
+        is_git_checkout=config.IS_GIT_CHECKOUT,
+        channel=updater.get_channel(),
+        check_enabled=updater.update_check_enabled(),
+        check_interval_hours=round(config.UPDATE_CHECK_INTERVAL_SECONDS / 3600, 1),
+        update_status=updater.get_cached_update_status(),
+        inapp_update_enabled=config.ENABLE_INAPP_UPDATE,
+        repo_url=updater.REPO_URL,
+        releases_url=updater.RELEASES_PAGE_URL,
+        backups=list(reversed(updater.list_backups()))[:5],
+        python_version=platform.python_version(),
+        platform_name=platform.platform(),
+        app_root=config.APP_ROOT,
+        db_path=db.DB_PATH,
+    )
+
+
+@app.route("/admin/about/check", methods=["POST"])
+@login_required
+def admin_about_check():
+    result = updater.refresh_update_cache_if_stale(force=True)
+    if result and result["ok"]:
+        if result["update_available"]:
+            flash(f"Update available: {result['current']} → {result['latest']}.", "success")
+        else:
+            flash("Up to date.", "success")
+    elif result:
+        flash(f"Couldn't check for updates: {result['error']}", "error")
+    return redirect(url_for("admin_about"))
+
+
+@app.route("/admin/about/settings", methods=["POST"])
+@login_required
+def admin_about_settings():
+    channel = request.form.get("update_channel", "")
+    if channel not in updater.CHANNELS:
+        flash("Unknown channel.", "error")
+        return redirect(url_for("admin_about"))
+    if channel != updater.get_channel():
+        updater.set_channel(channel)
+        # A cached "latest available" fetched for the *other* channel would be
+        # actively misleading next to the newly-selected one.
+        updater.clear_update_cache()
+    updater.set_update_check_enabled(bool(request.form.get("update_check_enabled")))
+    flash("Preferences saved.", "success")
+    return redirect(url_for("admin_about"))
+
+
+@app.route("/admin/about/update", methods=["POST"])
+@login_required
+def admin_update():
+    """Installs the latest release and restarts the app into it.
+
+    Gated the same way every other state-changing admin route in this app is -
+    login + CSRF, plus a client-side confirm() (see static/js/admin_update.js).
+    Unlike status-portal's equivalent button, there's no step-up 2FA here: this
+    app has no 2FA system yet. config.ENABLE_INAPP_UPDATE is the other gate,
+    lives in an env var rather than a DB setting precisely so an attacker who
+    owns the admin panel can't just switch it back on.
+
+    Runs updater.perform_update() synchronously - a deliberate, documented
+    instance of the "explicit one-shot admin action the user knows will be
+    slow" exception to CLAUDE.md's no-slow-I/O rule, not an automatic
+    background path."""
+    if not config.ENABLE_INAPP_UPDATE:
+        flash("In-app updates are disabled (PORTAL_ENABLE_INAPP_UPDATE=false). "
+              "Use the update.py script over SSH instead.", "error")
+        return redirect(url_for("admin_about"))
+    if config.IS_GIT_CHECKOUT:
+        flash("This is a git checkout, not an installed release - updating would overwrite "
+              "tracked files. Use `git pull` instead.", "error")
+        return redirect(url_for("admin_about"))
+
+    lines = []
+
+    def progress(message):
+        lines.append(message)
+        _logger.info("[update] %s", message)
+
+    try:
+        result = updater.perform_update(progress=progress)
+    except updater.UpdateError as e:
+        _logger.error("In-app update failed: %s", e)
+        flash(f"Update failed: {e}", "error")
+        return redirect(url_for("admin_about"))
+    except Exception as e:
+        _logger.exception("In-app update crashed")
+        flash(f"Update failed unexpectedly: {e} (see the server logs)", "error")
+        return redirect(url_for("admin_about"))
+
+    if not result["applied"]:
+        flash(f"Nothing to update - {result['reason']}.", "success")
+        return redirect(url_for("admin_about"))
+
+    # Written before the restart so the next successful start can confirm it
+    # came up on the new version - and so `python update.py rollback` knows
+    # which backup to use if it doesn't. See updater.write_pending_marker() for
+    # what this can and cannot detect.
+    updater.write_pending_marker(result["backup"], result["latest"])
+    flash(f"Updated {result['current']} → {result['latest']}. Restarting now - this page will be "
+          f"briefly unreachable. If it doesn't come back, run "
+          f"`python update.py rollback` on the server.", "success")
+    _restart_process()
+    return redirect(url_for("admin_about"))
+
+
+# ---------------------------------------------------------------------------
+# Restarting the process in place (used by admin_update above)
+# ---------------------------------------------------------------------------
+def _release_dev_server_socket():
+    """Closes the listening socket the Werkzeug reloader would otherwise hand
+    to the re-exec'd process via the WERKZEUG_SERVER_FD environment variable.
+
+    Ported from status-portal, which hit this for real: os.execv() replaces the
+    process image but keeps open file descriptors, and when the reloader is
+    active it marks its listening socket inheritable through that env var. The
+    re-executed process then tries to bind the same port a second time and
+    dies with "Address already in use" - a restart button that kills the
+    portal instead of restarting it. This app's dev entrypoint runs with
+    debug=False specifically to avoid the reloader being active in the first
+    place (see the bottom of this file) - this is belt-and-braces for if that
+    ever changes. Production (serve_waitress.py) never sets this var at all,
+    so there's nothing to close there either way.
+
+    Failure here is deliberately swallowed: not being able to close a socket
+    must never be the reason a restart doesn't happen."""
+    raw_fd = os.environ.pop("WERKZEUG_SERVER_FD", None)
+    if raw_fd is None:
+        return
+    try:
+        os.close(int(raw_fd))
+    except (ValueError, OSError):
+        _logger.info("Could not close the inherited development-server socket", exc_info=True)
+
+
+def _restart_process():
+    """Replaces the running process image in place via os.execv - same PID,
+    works identically whether launched as `python app.py`, `python
+    serve_waitress.py`, or either wrapped in a systemd unit/Task Scheduler
+    entry, and needs no supervisor process. Delayed briefly on a background
+    thread so the triggering HTTP response has a moment to actually reach the
+    browser first."""
+    def _do():
+        time.sleep(1)
+        _release_dev_server_socket()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_do, daemon=True).start()
+
+
 if __name__ == "__main__":
     db.init_db()
+    # If the previous shutdown was an in-app update restarting into a new
+    # version, this is where that gets confirmed (or reported as not having
+    # taken effect).
+    updater.check_pending_marker()
+    updater.start_background_checker()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
-    app.run(host="127.0.0.1", port=config.PORT, debug=True)
+    # debug=False deliberately: the Werkzeug reloader's WERKZEUG_SERVER_FD
+    # handoff and this app's own os.execv()-based self-restart (see
+    # _restart_process above) don't mix - see _release_dev_server_socket()'s
+    # docstring for the incident that taught status-portal this the hard way.
+    app.run(host="127.0.0.1", port=config.PORT, debug=False)
