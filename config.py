@@ -70,7 +70,7 @@ SECRET_KEY = _load_or_create_secret_key()
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
-PORT = int(os.environ.get("PORTAL_PORT", "5000"))
+PORT = int(os.environ.get("PORTAL_PORT", "5001"))
 SESSION_COOKIE_MAX_AGE_DAYS = 30
 WAITRESS_THREADS = int(os.environ.get("PORTAL_WAITRESS_THREADS", "8"))
 
