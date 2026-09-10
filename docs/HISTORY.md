@@ -5,6 +5,46 @@ verified against a real deployment (and when). Rules belong in `CLAUDE.md`; the
 stories behind them belong here. When `CLAUDE.md` gains a rule because something
 broke, it links to the write-up here instead of retelling it inline.
 
+## 2026-09-10 — Jellyfin 12.0 disabled legacy authorization; fixed before it ever shipped broken
+
+Jellyfin 12.0 released 2026-09-08 (jumping straight from 10.11.x - there's no
+10.12 or 11) and disables `EnableLegacyAuthorization` by default, with a
+migration (`DisableLegacyAuthorization`) that flips it off on existing installs
+too. That stops `X-Emby-Token`, `X-MediaBrowser-Token`, `X-Emby-Authorization`,
+the lowercase `api_key` query param, and the `"Emby"` auth scheme name from being
+read at all. Confirmed straight from `AuthorizationContext.cs` in the `v12.0` tag,
+not just the release notes - every one of those is gated behind
+`_configurationManager.Configuration.EnableLegacyAuthorization` in
+`GetAuthorizationInfoFromDictionary`/`GetAuthorizationDictionary`/`GetAuthorization`,
+while the plain `Authorization` header with the `MediaBrowser` scheme (and the
+`ApiKey` query param) is read unconditionally, first, same as every version back
+to 10.6.
+
+This surfaced from another agent's work on status-portal, relayed secondhand -
+worth independently verifying rather than trusting, given it's a security-adjacent
+claim about a real breaking change, so it was checked directly against
+`jellyfin/jellyfin`'s GitHub releases and source (`gh api`) rather than taken on
+faith. It held up exactly as described.
+
+`jellyfin_auth.py`'s sign-in check itself (`POST /Users/AuthenticateByName`) was
+never affected - that endpoint doesn't require a prior token, so it doesn't touch
+the legacy-gated code paths. The one call that did was `_revoke_token()`'s
+best-effort cleanup of the short-lived token after a successful sign-in, which
+sent `X-Emby-Token` - against a 12.0 server that would have silently stopped
+working (a 401, swallowed by the function's own best-effort design, so it would
+never have surfaced as an error, just an ever-growing stale device list in
+Jellyfin's own UI). Fixed by moving the token into a `Token="..."` field on the
+`Authorization` header instead, alongside the existing Client/Device/DeviceId/
+Version fields - the same header used for the pre-token client-identification
+call, just now optionally carrying a token too.
+
+Verified two ways: `tests/test_jellyfin_auth.py` asserts the revoke call's
+headers directly (no `X-Emby-Token`, an `Authorization` header carrying
+`Token="..."`), and against a small stand-in server built to actually enforce
+12.0's rule - it 401s the old `X-Emby-Token`-only pattern and accepts the new
+one, proving both that the fix works and that the *previous* code would have
+silently failed against a real 12.0 server.
+
 ## 2026-09-10 — First build: Flask skeleton, Steam search, Jellyfin-backed requests, admin panel
 
 The first session against the spec in `CLAUDE.md`. Scope was deliberately capped
