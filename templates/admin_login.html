@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Admin sign in{% endblock %}
+{% block body %}
+<div class="login-shell">
+  <div class="login-card">
+    <h1>{{ "Set admin password" if first_run else "Admin sign in" }}</h1>
+    {% if first_run %}
+      <p class="sub">First launch - set the password that protects /admin.</p>
+    {% endif %}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, msg in messages %}
+        <div class="flash {{ category }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required autofocus
+               autocomplete="{{ 'new-password' if first_run else 'current-password' }}">
+      </div>
+      {% if first_run %}
+        <div class="field">
+          <label for="confirm">Confirm password</label>
+          <input type="password" id="confirm" name="confirm" required autocomplete="new-password">
+        </div>
+      {% endif %}
+      <div class="form-actions">
+        <button class="btn" type="submit">{{ "Set password" if first_run else "Sign in" }}</button>
+        <a href="{{ url_for('index') }}" class="btn secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
