@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Games Portal{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">🎮 Games Portal</div>
+      <div class="topbar__sub">Search Steam's catalog and request a game</div>
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="GET" action="{{ url_for('index') }}" class="search-form">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search for a game…"
+           autocomplete="off" autofocus maxlength="100" aria-label="Search Steam's catalog">
+    <button type="submit" class="btn">Search</button>
+  </form>
+
+  {% if search_error %}
+    <div class="flash error">{{ search_error }}</div>
+  {% elif query and not results %}
+    <p class="empty-state">No results for "{{ query }}".</p>
+  {% endif %}
+
+  <div class="results-grid">
+    {% for r in results %}
+      <div class="result-card">
+        {% if r.icon_url %}
+          <img class="result-card__icon" src="{{ r.icon_url }}" alt="" loading="lazy">
+        {% else %}
+          <div class="result-card__icon result-card__icon--placeholder">🎮</div>
+        {% endif %}
+        <div class="result-card__body">
+          <div class="result-card__title">{{ r.name }}</div>
+          {% if r.short_description %}
+            <p class="result-card__desc">{{ r.short_description }}</p>
+          {% endif %}
+        </div>
+        <div class="result-card__actions">
+          {% if r.existing_status %}
+            <span class="badge {{ r.existing_status }}">{{ r.existing_status }}</span>
+          {% elif user %}
+            <form method="POST" action="{{ url_for('submit_request') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="appid" value="{{ r.appid }}">
+              <input type="hidden" name="next" value="{{ request.full_path.rstrip('?') }}">
+              <button type="submit" class="btn small">Request</button>
+            </form>
+          {% elif jellyfin_enabled %}
+            <a class="btn small secondary" href="{{ url_for('user_login', next=request.full_path.rstrip('?')) }}">Sign in to request</a>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

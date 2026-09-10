@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — Games Portal{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="error-shell">
+    <h1>{{ code }}</h1>
+    <p>{{ message }}</p>
+    <a class="btn" href="{{ url_for('index') }}">Back to search</a>
+  </div>
+</div>
+{% endblock %}

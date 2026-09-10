@@ -131,7 +131,7 @@ stale token and looks exactly like a failure.
   presented, what's been verified against a real deployment and when. Rules live
   in this file; the stories behind them live there.
 
-## Project structure (seed — grows as the app does)
+## Project structure (grows as the app does)
 
     CLAUDE.md
     README.md
@@ -142,8 +142,14 @@ stale token and looks exactly like a failure.
     serve_waitress.py       # production WSGI entrypoint
     config.py               # env-var config
     db.py                   # SQLite layer
-    steam.py                # storesearch client
-    scanner.py               # games-folder scan + matching
-    static/css/style.css    # design tokens, carried over from status-portal
+    steam.py                # storesearch + appdetails client
+    jellyfin_auth.py        # visitor identity — live Jellyfin credential check
+    scanner.py               # games-folder scan + matching — not built yet, waits on ROADMAP.md
+    requirements.txt / requirements-dev.txt
+    .env.example
+    Dockerfile / docker-compose.yml / .dockerignore
+    static/css/style.css    # design tokens + layout, carried over from status-portal
+    static/js/theme.js      # light/dark toggle
     templates/
-    instance/                # portal.db, created automatically — gitignored
+    tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, app.py routes
+    instance/                # portal.db + secret_key, created automatically — gitignored
