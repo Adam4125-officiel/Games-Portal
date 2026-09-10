@@ -5,28 +5,13 @@ deleted down to one index line once it's done (the code and `docs/HISTORY.md`
 become the better record at that point). See `CLAUDE.md` for how the code actually
 works.
 
-## Open decisions (confirm before/while building — don't guess silently)
-
-- **Folder → game matching strategy.** Matching purely on the folder name string
-  (a naive Sonarr-style scan) is fragile — a typo, punctuation, or a
-  differently-formatted name (`Half-Life 2` vs `half_life_2_2004`) misses a real
-  match. Two sturdier options:
-  - (a) embed the Steam AppID in the folder name or a small sidecar file the admin
-    drops in once per game, exact-match on that — most reliable, small one-time
-    admin cost per game.
-  - (b) fuzzy-match the name (e.g. `rapidfuzz`) with a confidence threshold;
-    anything below it surfaces to the admin as "possible match?" instead of
-    auto-resolving.
-
-  Don't ship pure exact-string matching as the only mode — pick (a), (b), or both.
-  Waits for the folder scanner build session — see `scanner.py` (not written yet).
-
 ## Ideas (unranked)
 
-- Show a small "already installed" badge directly on a search result if the
-  scanner has already matched it, instead of only surfacing that inside a request.
-- Discord notification on new request / status change, mirroring status-portal's
-  optional webhook pattern.
+- Per-visitor Discord DMs on request status change. Discord IDs are already
+  collected from Seerr and cached (`seerr.py`); delivery itself needs a real bot
+  (a persistent connection), which is a separate, optional piece of
+  infrastructure - status-portal keeps its own the same way. See
+  `docs/HISTORY.md` for why this was scoped out of the first notifications pass.
 - Jellyfin-backed sign-in is currently a single env var (`PORTAL_JELLYFIN_URL`),
   checked live on every sign-in with no cached user list — deliberately simpler
   than status-portal's `jellyfin_auth.py` (no integrations table, no sync task, no

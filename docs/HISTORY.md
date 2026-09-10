@@ -5,6 +5,43 @@ verified against a real deployment (and when). Rules belong in `CLAUDE.md`; the
 stories behind them belong here. When `CLAUDE.md` gains a rule because something
 broke, it links to the write-up here instead of retelling it inline.
 
+## 2026-09-10 — Folder scanner built; and a correction to how prereleases get cut
+
+Built `scanner.py` against the matching strategy the user picked when asked
+(ROADMAP.md's last open decision): an AppID tag on the folder name or a
+`.steam-appid` sidecar file wins when present (exact, auto-applied); with
+neither, `rapidfuzz` scores the folder name against every active request's
+title, and anything above the confidence threshold is surfaced at
+`/admin/scanner` as "possible match?" - never auto-resolved. Confirming a
+suggestion renames the folder to embed the AppID (so every future scan
+matches it exactly, step one, and never asks about that folder again),
+records it installed, and marks the request done. Verified live: a real
+temp folder with an exact-tagged subfolder and a fuzzy-only one, scanned for
+real, the fuzzy suggestion confirmed through the real admin UI, the folder
+actually renamed on disk, the request actually marked done, and the
+"installed" badge actually showing on a subsequent real search.
+
+This closes out all three of the open decisions ROADMAP.md started with
+(folder matching here; visitor identity and deployment mode in the first
+session) - see that file's now-trimmed "Open decisions" section and
+`CLAUDE.md`'s pointer to this entry.
+
+**Also this stretch: six prereleases (`v1.0.0-rc.4` through `rc.9`) got cut
+for what was really one batch of independent feature work** (request
+management, DB backup/restore, notifications, self-update), one rc per
+branch as each finished, then three more near-duplicates when a shared
+one-line port-default fix (5000 → 5001, to stop colliding with
+status-portal) rode along on each already-cut branch and got its own fresh
+release rather than just a commit. Called out by the user mid-session:
+pre-releasing is meant to be a coarser decision than committing - a batch of
+finished work, not every individual commit or every branch the moment it
+happens to finish. The three fully-superseded releases and tags (`rc.3`,
+`rc.4`, `rc.5` - each missing only the port fix its `rc.7`/`rc.8`/`rc.9`
+counterpart has) were deleted as cleanup, and `CLAUDE.md`'s release-process
+rule now says this explicitly, including that a small shared fix touching
+several open branches rides along as a plain commit on each rather than
+triggering a release of its own.
+
 ## 2026-09-10 — Jellyfin 12.0 disabled legacy authorization; fixed before it ever shipped broken
 
 Jellyfin 12.0 released 2026-09-08 (jumping straight from 10.11.x - there's no

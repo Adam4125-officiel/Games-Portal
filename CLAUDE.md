@@ -35,12 +35,17 @@ file", that belongs in a different project.
 - Storage: **SQLite**, single file under `instance/`, created automatically.
 - Steam data: the public, unauthenticated `store.steampowered.com/api/storesearch`
   endpoint — no API key needed, no scraping.
+- Folder matching: exact AppID tag/sidecar file first, `rapidfuzz` fallback for
+  everything else — see `scanner.py`. A fuzzy match is never auto-resolved; it
+  waits for the admin to confirm at `/admin/scanner`.
 
-## Open decisions — see `ROADMAP.md`
+## Open decisions
 
-This spec has a few things intentionally left open (folder→game matching strategy,
-visitor identity, deployment mode). Don't silently pick one while building — they're
-listed in `ROADMAP.md` with the tradeoffs; confirm with the user first.
+All three originally listed here (folder→game matching strategy, visitor identity,
+deployment mode) are resolved - see `docs/HISTORY.md` for how and when. The pattern
+still applies to whatever comes next: don't silently pick on a genuinely open
+question while building — surface it and confirm with the user first, same as
+these three were.
 
 ## Visual identity — same as status-portal, don't design a new one
 
@@ -167,7 +172,7 @@ stale token and looks exactly like a failure.
     db.py                   # SQLite layer
     steam.py                # storesearch + appdetails client
     jellyfin_auth.py        # visitor identity — live Jellyfin credential check
-    scanner.py               # games-folder scan + matching — not built yet, waits on ROADMAP.md
+    scanner.py               # games-folder scan + matching (AppID tag/sidecar, fuzzy fallback)
     requirements.txt / requirements-dev.txt
     .env.example
     Dockerfile / docker-compose.yml / .dockerignore
