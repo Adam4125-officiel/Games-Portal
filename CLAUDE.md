@@ -100,13 +100,21 @@ and don't hold everything back for one tidy final commit.
    source of truth anything comparing versions reads.
 2. `vMAJOR.MINOR.PATCH`, with a `-rc.N` suffix for anything not yet confirmed
    stable from real end-to-end testing (see Branching above) — mark it a
-   prerelease on GitHub too. **Cut a new `-rc.N` every time a self-contained
-   chunk of current work finishes without that confirmation yet** — don't wait
-   for the branch to merge first. The tag targets the *branch's* tip commit, not
-   `main`, since the branch is still open at that point; the zip lets the user
-   pull down and try that exact state without anything touching `main`. A stable
-   (non-`-rc`) release only ever gets cut from `main`, after the merge the
-   Branching rule above describes.
+   prerelease on GitHub too. Commits still land per completed fix as always
+   (see the cadence rule below) — pre-releasing is a separate, coarser
+   decision from committing. **Cut a new `-rc.N` when a batch of work is
+   ready for the user to look at, not on every individual commit, fix, or
+   branch as it happens to finish.** Several branches worked in the same
+   stretch (e.g. a handful of independent features built back to back in one
+   session) get bundled into one round of `-rc.N` cuts once that stretch is
+   done, not one each as they land - and a small fix that touches multiple
+   already-open branches (a shared config default, say) rides along on each
+   as a plain commit and waits for that branch's next real prerelease rather
+   than triggering one of its own. The tag targets the *branch's* tip commit,
+   not `main`, since the branch is still open at that point; the zip lets the
+   user pull down and try that exact state without anything touching `main`.
+   A stable (non-`-rc`) release only ever gets cut from `main`, after the
+   merge the Branching rule above describes.
 3. Changelog from `git log <previous-tag>..HEAD --oneline`, grouped informally into
    Added / Fixed / Changed — written for a person, not a machine.
 4. `git archive --format=zip -o <name>-vX.Y.Z.zip HEAD` for the release asset —
