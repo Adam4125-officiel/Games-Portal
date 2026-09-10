@@ -102,3 +102,30 @@ the code as built:
 
 Released as `v1.0.0-rc.1` - the "rc" reflects the real-Jellyfin gap above, not any
 known defect.
+
+## 2026-09-10 — One feature batch, five branches, five separate prereleases (rule fixed twice, only stuck the second time)
+
+The user handed over one batch of five independent features to build in a single
+session: self-update system, request management, notifications/Seerr sync, DB
+backup/restore, and the folder scanner. Each landed on its own branch/PR (correct -
+that's the Branching rule), but the release step read "cut a new `-rc.N` every time
+a self-contained chunk of current work finishes" and took each *branch* finishing
+as that trigger. Result: `v1.0.0-rc.6` through `v1.0.0-rc.10`, one GitHub
+prerelease per branch, none of them representing more than a fifth of what the user
+actually asked for - exactly the "prerelease at every single little feature" the
+user then had to call out and ask to have fixed.
+
+It was already caught once, mid-batch: a commit on the `folder-scanner` branch
+(`9f59981`) rewrote `CLAUDE.md`'s cadence rule to say batches, not branches. Then
+the very next thing that branch did was finish the scanner and cut `v1.0.0-rc.10` -
+one more per-branch release, under the rule that had just been rewritten to forbid
+it. Rewriting a rule mid-batch didn't help because "per-branch" was still true of
+the branch already in progress; the fix only guarded *future* batches, not the rest
+of the one it landed in the middle of.
+
+`CLAUDE.md`'s release-process section now says explicitly that a rule change like
+this governs the rest of the batch it lands in, not just batches started after it,
+and spells out that "batch" means the whole handoff, not the branch. The five
+existing rc.6-rc.10 releases and their branches were left as-is at the user's
+call - they still work as individual test builds - so this entry is the fix,
+not a cleanup log.

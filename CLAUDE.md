@@ -100,13 +100,25 @@ and don't hold everything back for one tidy final commit.
    source of truth anything comparing versions reads.
 2. `vMAJOR.MINOR.PATCH`, with a `-rc.N` suffix for anything not yet confirmed
    stable from real end-to-end testing (see Branching above) — mark it a
-   prerelease on GitHub too. **Cut a new `-rc.N` every time a self-contained
-   chunk of current work finishes without that confirmation yet** — don't wait
-   for the branch to merge first. The tag targets the *branch's* tip commit, not
-   `main`, since the branch is still open at that point; the zip lets the user
-   pull down and try that exact state without anything touching `main`. A stable
-   (non-`-rc`) release only ever gets cut from `main`, after the merge the
-   Branching rule above describes.
+   prerelease on GitHub too. Pre-releasing is a decision made **per batch of
+   handed-over work, not per branch and not per feature.** When the user hands
+   over several independent features/fixes to build in one go, that whole
+   handoff is one batch — finish it first, then cut `-rc.N` (one for each
+   branch the batch touched, in one pass) once, not as each branch happens to
+   finish first. A batch of one (a single fix or feature worked in isolation)
+   still gets its own `-rc.N` when it's done; the rule only forbids
+   fragmenting one batch into several releases (see `docs/HISTORY.md`'s
+   2026-09-10 rc.6–rc.10 entry for what that looked like and why it happened
+   twice in the same session even after being caught once). If a cadence rule
+   change like this one lands mid-batch, it governs the *rest of that same
+   batch* too — don't keep releasing under the old cadence and only apply the
+   fix starting next time. When it's genuinely unclear whether something is
+   its own batch or part of one already in flight, ask the user rather than
+   defaulting to cutting a release. The tag targets the *branch's* tip commit,
+   not `main`, since the branch is still open at that point; the zip lets the
+   user pull down and try that exact state without anything touching `main`.
+   A stable (non-`-rc`) release only ever gets cut from `main`, after the
+   merge the Branching rule above describes.
 3. Changelog from `git log <previous-tag>..HEAD --oneline`, grouped informally into
    Added / Fixed / Changed — written for a person, not a machine.
 4. `git archive --format=zip -o <name>-vX.Y.Z.zip HEAD` for the release asset —
