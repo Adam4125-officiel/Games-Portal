@@ -3,13 +3,17 @@ app.py — Flask routes (public + admin). Dev server entry point.
 Run with: python app.py
 Admin panel: /admin (password is set on first launch)
 """
+import io
 import logging
+import os
 import secrets
+import tempfile
 import time
-from datetime import timedelta
+import zipfile
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -384,6 +388,195 @@ def admin_update_request(request_id):
         db.update_request_status(request_id, status, note)
         flash("Request updated.", "success")
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
+# ---------------------------------------------------------------------------
+# Backup and restore
+# ---------------------------------------------------------------------------
+KEEP_DB_SAFETY_BACKUPS = 5
+# Refuses an upload past this size before ever touching SQLite with it - a
+# generous ceiling for a database that's a handful of KB per request row.
+MAX_RESTORE_UPLOAD_BYTES = 64 * 1024 * 1024
+
+
+def _db_safety_backup_dir():
+    """Computed from db.DB_PATH on every call rather than cached at import
+    time - tests monkeypatch db.DB_PATH per-test, and a cached path would keep
+    pointing at the real instance/db_backups/ regardless, quietly leaking test
+    snapshot files into the real project directory."""
+    return os.path.join(os.path.dirname(db.DB_PATH), "db_backups")
+
+
+def _list_db_safety_backups():
+    """Newest first. Snapshots taken automatically right before each restore -
+    see _db_safety_snapshot()."""
+    backup_dir = _db_safety_backup_dir()
+    try:
+        names = [n for n in os.listdir(backup_dir) if n.endswith(".db")]
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        path = os.path.join(backup_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        entries.append({"name": name, "path": path,
+                        "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                        "created_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()})
+    return sorted(entries, key=lambda e: e["created_at"], reverse=True)
+
+
+def _prune_db_safety_backups():
+    for entry in _list_db_safety_backups()[KEEP_DB_SAFETY_BACKUPS:]:
+        try:
+            os.remove(entry["path"])
+        except OSError:
+            _logger.warning("Could not prune old database snapshot %s", entry["name"])
+
+
+def _db_safety_snapshot():
+    """A consistent snapshot of the database as it is *right now*, taken right
+    before it's replaced - the whole reason a bad restore isn't unrecoverable.
+    Happens after the upload has already been validated (no point snapshotting
+    for a file about to be rejected) and before a single byte of the live
+    database is touched."""
+    backup_dir = _db_safety_backup_dir()
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(backup_dir, f"portal-before-restore-{stamp}.db")
+    db.backup_to_file(path)
+    return path
+
+
+@app.route("/admin/backup")
+@login_required
+def admin_backup():
+    return render_template("admin_backup.html", db_backups=_list_db_safety_backups())
+
+
+@app.route("/admin/backup/download")
+@login_required
+def admin_backup_download():
+    if not os.path.isfile(db.DB_PATH):
+        abort(404)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_db_path = os.path.join(tmp_dir, "portal.db")
+        db.backup_to_file(tmp_db_path)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_db_path, arcname="portal.db")
+    buffer.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return send_file(buffer, mimetype="application/zip", as_attachment=True,
+                      download_name=f"games-portal-backup-{stamp}.zip", max_age=0)
+
+
+def _write_uploaded_database(upload, dest_path):
+    """The uploaded file -> a plain .db at `dest_path`. Returns None, or a
+    reason. Accepts either the zip the backup button produces or a bare .db,
+    because an admin who unzipped it to look inside shouldn't be told their
+    own backup is invalid. Nothing here inspects the *contents* - that's
+    db.validate_backup_file()'s job; this only gets the bytes safely onto
+    disk, which for a zip means never trusting the declared size and never
+    joining a member name to a path (the classic zip-slip) - the single
+    member is streamed to a filename this function chose, never the archive's
+    own name."""
+    filename = (upload.filename or "").lower()
+    try:
+        if filename.endswith(".zip"):
+            with zipfile.ZipFile(upload.stream) as zf:
+                members = [m for m in zf.infolist()
+                          if not m.is_dir() and m.filename.lower().endswith(".db")]
+                if not members:
+                    return "That zip doesn't contain a .db file."
+                if len(members) > 1:
+                    return f"That zip contains {len(members)} .db files - expected exactly one."
+                member = members[0]
+                if member.file_size > MAX_RESTORE_UPLOAD_BYTES:
+                    return f"The database inside that zip is too large ({member.file_size // (1024 * 1024)} MB)."
+                written = 0
+                with zf.open(member) as src, open(dest_path, "wb") as out:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_RESTORE_UPLOAD_BYTES:
+                            return "The database inside that zip is too large."
+                        out.write(chunk)
+        else:
+            upload.save(dest_path)
+    except zipfile.BadZipFile:
+        return "That file isn't a readable zip."
+    except OSError as e:
+        return f"Could not read the uploaded file: {e}"
+    return None
+
+
+@app.route("/admin/backup/restore", methods=["POST"])
+@login_required
+def admin_restore_db():
+    """Replaces the live database with an uploaded backup.
+
+    The order below is the safety machinery and is not rearrangeable:
+      1. stage the upload to a temp file - the live database is untouched;
+      2. validate it's a well-formed SQLite database *and* one of ours;
+      3. snapshot the current database, so a regretted restore is recoverable;
+      4. atomically replace (db.restore_from_file).
+
+    Unlike status-portal's equivalent this never restarts the process
+    afterwards: this app's db.py never pools a connection or runs in WAL mode
+    (see restore_from_file's docstring), so the very next request's
+    db.get_db() call already sees the replaced file - there's no stale
+    connection or cached state a restart would need to clear."""
+    upload = request.files.get("backup")
+    if not upload or not upload.filename:
+        flash("Choose a backup file to restore.", "error")
+        return redirect(url_for("admin_backup"))
+
+    os.makedirs(os.path.dirname(db.DB_PATH), exist_ok=True)
+    fd, staged = tempfile.mkstemp(prefix="restore-", suffix=".db",
+                                  dir=os.path.dirname(db.DB_PATH))
+    os.close(fd)
+    try:
+        error = _write_uploaded_database(upload, staged)
+        if error is None:
+            error = db.validate_backup_file(staged)
+        if error:
+            flash(f"Restore refused: {error} Your database has not been touched.", "error")
+            return redirect(url_for("admin_backup"))
+
+        try:
+            snapshot = _db_safety_snapshot()
+        except Exception as e:
+            _logger.exception("Could not snapshot the database before restoring")
+            flash(f"Restore aborted: couldn't back up your current database first ({e}). "
+                  "Nothing has been changed.", "error")
+            return redirect(url_for("admin_backup"))
+
+        try:
+            db.restore_from_file(staged)
+        except Exception as e:
+            _logger.exception("Database restore failed")
+            flash(f"Restore failed: {e}. Your previous database was saved to "
+                  f"{os.path.basename(snapshot)}.", "error")
+            return redirect(url_for("admin_backup"))
+        staged = None
+        _prune_db_safety_backups()
+    finally:
+        if staged and os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+
+    _logger.warning("Database restored from an uploaded backup; previous database saved to %s",
+                     os.path.basename(snapshot))
+    flash(f"Database restored. Your previous database was saved as "
+          f"{os.path.basename(snapshot)} in instance/db_backups/.", "success")
+    return redirect(url_for("admin_backup"))
 
 
 if __name__ == "__main__":

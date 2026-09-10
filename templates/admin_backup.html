@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Backup — Admin{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="admin-shell">
+    <nav class="admin-nav">
+      <div class="admin-nav__brand">⚙ Admin</div>
+      <a href="{{ url_for('admin_requests') }}">Requests</a>
+      <a href="{{ url_for('admin_backup') }}" class="active">Backup</a>
+      <a href="{{ url_for('admin_logout') }}" class="admin-nav__logout">Sign out</a>
+    </nav>
+
+    <div class="admin-main">
+      <div class="topbar">
+        <div>
+          <div class="topbar__brand">Backup</div>
+          <div class="topbar__sub">Download a snapshot, or restore one</div>
+        </div>
+        <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, msg in messages %}
+          <div class="flash {{ category }}">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
+
+      <div class="panel">
+        <h2>Download a backup</h2>
+        <p class="dim">A zipped, consistent snapshot of the database, taken right now - worth
+          keeping an off-box copy of, and worth taking before poking at anything by hand.</p>
+        <a href="{{ url_for('admin_backup_download') }}" class="btn secondary">Download a backup</a>
+      </div>
+
+      <div class="panel">
+        <h2>Restore one</h2>
+        <p class="dim">Upload a backup zip produced by the button above (or the <code>.db</code>
+          from inside one) to replace the current database with it.</p>
+        <p class="dim">Everything currently in the portal - requests, admin password - is
+          replaced by whatever the backup holds. Your current database is saved to
+          <code>instance/db_backups/</code> first, and the file is checked for being a real
+          Games Portal database before anything is touched.</p>
+        <form method="POST" action="{{ url_for('admin_restore_db') }}" enctype="multipart/form-data"
+              id="restore-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="field">
+            <label for="restore-file">Backup file</label>
+            <input type="file" id="restore-file" name="backup" accept=".zip,.db" required>
+            <p class="field-hint">A <code>.zip</code> from the button above, or a bare <code>.db</code>.</p>
+          </div>
+          <button type="submit" class="btn danger"
+                  data-confirm="Replace the current database with this backup? Your current data will be saved first, but everything currently in the portal will be overwritten.">
+            Restore this backup
+          </button>
+        </form>
+      </div>
+
+      {% if db_backups %}
+      <div class="panel">
+        <h2>Saved before a previous restore</h2>
+        <p class="dim">Kept in <code>instance/db_backups/</code>. To undo a restore, copy one of
+          these over <code>instance/portal.db</code> from a shell - there is deliberately no
+          button for that, since the case it exists for is a portal that won't start.</p>
+        <table class="info-table">
+          {% for b in db_backups %}
+          <tr>
+            <th><code>{{ b.name }}</code></th>
+            <td>{{ b.size_mb }} MB · {{ b.created_at[:16].replace('T', ' ') }} UTC</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -151,3 +151,93 @@ def update_request_status(request_id, status, admin_note):
                  (status, admin_note, now_iso(), request_id))
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Backup and restore (see app.py's /admin/backup)
+# ---------------------------------------------------------------------------
+def backup_to_file(dest_path):
+    """Writes a consistent snapshot of the live database to dest_path via
+    SQLite's own online backup API - a plain file copy of DB_PATH could catch
+    a torn/partial write mid-transaction; Connection.backup() can't."""
+    source = sqlite3.connect(DB_PATH)
+    dest = sqlite3.connect(dest_path)
+    with dest:
+        source.backup(dest)
+    source.close()
+    dest.close()
+
+
+# Every SQLite file starts with this exact 16-byte string. Checked first
+# because it rejects the overwhelmingly common mistake (a renamed text file,
+# the wrong file entirely) instantly, without handing the bytes to SQLite.
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+# Tables a file must contain before this app accepts it as *its own* backup.
+# The header and an integrity check together only prove "a valid SQLite
+# database" - restoring some other app's database (or a Jellyfin library) would
+# silently wipe this portal and likely leave it unable to start.
+RESTORE_REQUIRED_TABLES = ("settings", "requests")
+
+
+def validate_backup_file(path):
+    """None if `path` is a well-formed SQLite database that looks like this
+    app's own, otherwise a string explaining why not - the caller's whole job
+    is telling the admin what was wrong with their file, and "that isn't a
+    database" vs. "that's a database, but not this app's" is exactly what they
+    need to hear. Runs entirely read-only against a staged copy; nothing here
+    ever touches the live database."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(SQLITE_HEADER))
+    except OSError as e:
+        return f"Could not read the uploaded file: {e}"
+    if header != SQLITE_HEADER:
+        return "That file isn't a SQLite database (its header doesn't match)."
+
+    conn = None
+    try:
+        # Read-only, and via a URI so SQLite cannot create or modify anything
+        # even if the path is wrong - a validation step must never have side
+        # effects.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        if not result or result[0] != "ok":
+            detail = result[0] if result else "no result"
+            return f"That database failed SQLite's integrity check ({detail})."
+        names = {row[0] for row in
+                 conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    except sqlite3.DatabaseError as e:
+        return f"That file couldn't be opened as a database: {e}"
+    finally:
+        if conn is not None:
+            conn.close()
+
+    missing = [t for t in RESTORE_REQUIRED_TABLES if t not in names]
+    if missing:
+        return ("That's a valid SQLite database, but it isn't a Games Portal backup - "
+                f"it has no {', '.join(missing)} table(s).")
+    return None
+
+
+def restore_from_file(src_path):
+    """Replaces the live database with `src_path`. Assumes it has already been
+    validated - this does the dangerous part, not the deciding.
+
+    Just an atomic rename: unlike status-portal, nothing here runs in WAL mode
+    or keeps a pooled connection open across requests (see get_db() - every
+    call opens and closes its own connection immediately), so there's no
+    -wal/-shm sidecar to reconcile and no stale open handle to release first.
+    os.replace() is atomic on both platforms, so a crash mid-restore leaves
+    either the old database or the new one - never half of either - and the
+    very next get_db() call anywhere in the app simply opens the replaced
+    file, with no process restart required for it to take effect."""
+    os.replace(src_path, DB_PATH)
+    # Defensive: a backup produced by some other WAL-mode SQLite process could
+    # in principle leave sidecars behind once opened for validation, even
+    # though this app's own connections never create them.
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            os.remove(DB_PATH + suffix)
+        except OSError:
+            pass
