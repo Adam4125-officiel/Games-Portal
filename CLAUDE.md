@@ -76,13 +76,20 @@ never something that fires on every page load.
 `_ensure_column()`-style call in `init_db()` — `CREATE TABLE IF NOT EXISTS` is a
 silent no-op on a table that already exists.
 
-**Branching: always a branch + PR, never straight to `main`.** One branch at a
-time, held open until the work is actually tested end-to-end — not a branch per
-fix. Merge with a regular merge commit (`gh pr merge N --merge`), never
+**Branching: always a branch + PR, never straight to `main`.** One branch/PR per
+piece of work, not a branch per fix — it stays open and keeps collecting commits
+as work continues, including fixes found after it looked done, until the user
+explicitly confirms it's stable from **real end-to-end testing against a real
+instance** (a real Jellyfin server, a real deployment). Passing `pytest`/Playwright/
+mocked-stand-in verification is necessary before asking for that confirmation, but
+it is not what satisfies it — those catch what they catch, and this project has
+already had a case (the Jellyfin 12.0 legacy-auth fix) where mocked coverage alone
+would not have proven the fix worked against a real server. Only once the user
+confirms: merge with a regular merge commit (`gh pr merge N --merge`, never
 squash/rebase, so the individual per-fix commits survive on `main` for `git
-bisect`/`git revert`. Doc-only edits (`CLAUDE.md`, `ROADMAP.md`, `docs/HISTORY.md`)
-can go straight to `main` if no branch is currently open; if one is open, they ride
-along on it instead.
+bisect`/`git revert`), then delete the branch. Doc-only edits (`CLAUDE.md`,
+`ROADMAP.md`, `docs/HISTORY.md`) can go straight to `main` if no branch is
+currently open; if one is open, they ride along on it instead.
 
 **Commit cadence: one commit per completed fix, not one per session.** "Complete"
 means it works and its tests pass — don't batch a whole session into one commit,
@@ -91,8 +98,15 @@ and don't hold everything back for one tidy final commit.
 **Release process**, once there's a first stable line to cut:
 1. Bump `VERSION` (tracked file at repo root, no leading `v`) first — the single
    source of truth anything comparing versions reads.
-2. `vMAJOR.MINOR.PATCH`, with a `-rc.N` suffix for anything not yet verified
-   end-to-end (mark it a prerelease on GitHub too).
+2. `vMAJOR.MINOR.PATCH`, with a `-rc.N` suffix for anything not yet confirmed
+   stable from real end-to-end testing (see Branching above) — mark it a
+   prerelease on GitHub too. **Cut a new `-rc.N` every time a self-contained
+   chunk of current work finishes without that confirmation yet** — don't wait
+   for the branch to merge first. The tag targets the *branch's* tip commit, not
+   `main`, since the branch is still open at that point; the zip lets the user
+   pull down and try that exact state without anything touching `main`. A stable
+   (non-`-rc`) release only ever gets cut from `main`, after the merge the
+   Branching rule above describes.
 3. Changelog from `git log <previous-tag>..HEAD --oneline`, grouped informally into
    Added / Fixed / Changed — written for a person, not a machine.
 4. `git archive --format=zip -o <name>-vX.Y.Z.zip HEAD` for the release asset —
@@ -105,9 +119,10 @@ and don't hold everything back for one tidy final commit.
 
 **Ending a session** (only when the user explicitly says the session/work is
 done): update `CLAUDE.md` / `docs/HISTORY.md`, trim `ROADMAP.md` for anything
-shipped, release only if the user confirmed things are stable (untested work stays
-at `-rc.N`, branch stays open), then delete every merged/stale branch, remote and
-local.
+shipped, cut a final `-rc.N` for whatever hasn't been confirmed stable from real
+end-to-end testing (branch stays open, nothing merges without that confirmation —
+see Branching above), then delete every already-merged/stale branch, remote and
+local. A session ending mid-branch is not itself the confirmation.
 
 **Testing/verification habits.** A fresh sandbox/codespace starts with nothing
 beyond a bare Python install — no project deps, no Playwright/Chromium. Standing
