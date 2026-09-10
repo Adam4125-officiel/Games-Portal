@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import config
 import db
 import jellyfin_auth
+import scanner
 import steam
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -232,9 +233,12 @@ def index():
                 _logger.warning("Steam search failed for %r: %s", query, e)
                 search_error = "Steam search is unavailable right now. Please try again shortly."
 
-    existing = db.active_request_appids([r["appid"] for r in results])
+    appids = [r["appid"] for r in results]
+    existing = db.active_request_appids(appids)
+    installed = db.installed_appids(appids)
     for r in results:
         r["existing_status"] = existing.get(r["appid"])
+        r["already_installed"] = r["appid"] in installed
 
     return render_template("index.html", query=query, results=results, search_error=search_error)
 
@@ -386,7 +390,59 @@ def admin_update_request(request_id):
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
 
+# ---------------------------------------------------------------------------
+# Games-folder scanner
+# ---------------------------------------------------------------------------
+@app.route("/admin/scanner")
+@login_required
+def admin_scanner():
+    return render_template(
+        "admin_scanner.html",
+        enabled=scanner.is_enabled(),
+        games_folder=config.GAMES_FOLDER,
+        pending_matches=db.list_pending_scan_matches(),
+        installed_games=db.list_installed_games(),
+    )
+
+
+@app.route("/admin/scanner/scan", methods=["POST"])
+@login_required
+def admin_scanner_scan_now():
+    result = scanner.scan_once()
+    if not result["ok"]:
+        flash(result["error"], "error")
+    else:
+        flash(f'Scanned {result["folders_scanned"]} folder(s): {result["exact_matches"]} exact match(es), '
+              f'{result["suggestions"]} suggestion(s) for review.', "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/matches/<int:match_id>/confirm", methods=["POST"])
+@login_required
+def admin_scanner_confirm(match_id):
+    try:
+        new_name = scanner.confirm_match(match_id)
+    except scanner.ScanError as e:
+        flash(f"Could not confirm: {e}", "error")
+    else:
+        flash(f'Confirmed - folder renamed to "{new_name}".', "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/matches/<int:match_id>/reject", methods=["POST"])
+@login_required
+def admin_scanner_reject(match_id):
+    try:
+        scanner.reject_match(match_id)
+    except scanner.ScanError as e:
+        flash(f"Could not reject: {e}", "error")
+    else:
+        flash("Suggestion dismissed.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
 if __name__ == "__main__":
     db.init_db()
+    scanner.start_background_checker()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
     app.run(host="127.0.0.1", port=config.PORT, debug=True)

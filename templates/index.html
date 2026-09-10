@@ -42,7 +42,9 @@
           {% endif %}
         </div>
         <div class="result-card__actions">
-          {% if r.existing_status %}
+          {% if r.already_installed %}
+            <span class="badge done">installed</span>
+          {% elif r.existing_status %}
             <span class="badge {{ r.existing_status }}">{{ r.existing_status }}</span>
           {% elif user %}
             <form method="POST" action="{{ url_for('submit_request') }}">

@@ -163,3 +163,108 @@ def test_csrf_protection_rejects_missing_token(isolated_db):
             assert resp.status_code == 400
     finally:
         app_module.app.config["TESTING"] = True
+
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner
+# ---------------------------------------------------------------------------
+def test_admin_scanner_requires_login(client):
+    resp = client.get("/admin/scanner")
+    assert resp.status_code == 302
+
+
+def test_admin_scanner_disabled_state(admin_client, monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner, "is_enabled", lambda: False)
+    resp = admin_client.get("/admin/scanner")
+    assert resp.status_code == 200
+    assert b"Disabled" in resp.data
+
+
+def test_admin_scanner_scan_now_reports_a_summary(admin_client, monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner, "scan_once",
+                        lambda: {"ok": True, "folders_scanned": 5, "exact_matches": 2, "suggestions": 1})
+    resp = admin_client.post("/admin/scanner/scan", follow_redirects=True)
+    assert b"Scanned 5 folder" in resp.data
+
+
+def test_admin_scanner_scan_now_reports_when_disabled(admin_client, monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner, "scan_once", lambda: {"ok": False, "error": "No games folder configured."})
+    resp = admin_client.post("/admin/scanner/scan", follow_redirects=True)
+    assert b"No games folder configured" in resp.data
+
+
+def test_admin_scanner_confirm_requires_login(client):
+    resp = client.post("/admin/scanner/matches/1/confirm")
+    assert resp.status_code == 302
+
+
+def test_admin_scanner_confirm_success(admin_client, monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner, "confirm_match", lambda match_id: "Half Life 2 [220]")
+    resp = admin_client.post("/admin/scanner/matches/1/confirm", follow_redirects=True)
+    assert b"Confirmed" in resp.data
+    assert b"Half Life 2 [220]" in resp.data
+
+
+def test_admin_scanner_confirm_reports_scan_error(admin_client, monkeypatch):
+    import scanner
+
+    def boom(match_id):
+        raise scanner.ScanError("The folder no longer exists.")
+
+    monkeypatch.setattr(scanner, "confirm_match", boom)
+    resp = admin_client.post("/admin/scanner/matches/1/confirm", follow_redirects=True)
+    assert b"Could not confirm" in resp.data
+
+
+def test_admin_scanner_reject_success(admin_client, monkeypatch):
+    import scanner
+    calls = []
+    monkeypatch.setattr(scanner, "reject_match", lambda match_id: calls.append(match_id))
+    resp = admin_client.post("/admin/scanner/matches/1/reject", follow_redirects=True)
+    assert calls == [1]
+    assert b"dismissed" in resp.data
+
+
+def test_search_shows_installed_badge(client, monkeypatch):
+    import db
+    import steam
+
+    monkeypatch.setattr(steam, "search",
+                        lambda term: [{"appid": 220, "name": "Half-Life 2", "icon_url": "",
+                                       "short_description": ""}])
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+    db.upsert_installed_game(220, "Half-Life 2 [220]", "/games/Half-Life 2 [220]")
+
+    resp = client.get("/?q=half-life")
+    assert b"installed" in resp.data
+
+
+def test_scanner_end_to_end_via_admin_routes(admin_client, tmp_path, monkeypatch):
+    """A slightly bigger integration test: real scanner.scan_once() (not
+    mocked) against a real temp folder, through the real admin routes."""
+    import db
+    import scanner
+
+    games_dir = tmp_path / "games"
+    games_dir.mkdir()
+    monkeypatch.setattr(scanner.config, "GAMES_FOLDER", str(games_dir))
+
+    rid = db.create_request(220, "Half-Life 2", "", "", "jf-1", "Alice")
+    (games_dir / "Half Life 2").mkdir()
+
+    resp = admin_client.post("/admin/scanner/scan", follow_redirects=True)
+    assert b"1 suggestion" in resp.data
+
+    resp = admin_client.get("/admin/scanner")
+    assert b"Half Life 2" in resp.data
+    assert b"Half-Life 2" in resp.data
+
+    match = db.list_pending_scan_matches()[0]
+    resp = admin_client.post(f"/admin/scanner/matches/{match['id']}/confirm", follow_redirects=True)
+    assert b"Confirmed" in resp.data
+    assert db.get_request(rid)["status"] == "done"
+    assert (games_dir / "Half Life 2 [220]").is_dir()

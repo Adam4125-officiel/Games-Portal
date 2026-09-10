@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Scanner — Admin{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="admin-shell">
+    <nav class="admin-nav">
+      <div class="admin-nav__brand">⚙ Admin</div>
+      <a href="{{ url_for('admin_requests') }}">Requests</a>
+      <a href="{{ url_for('admin_scanner') }}" class="active">Scanner</a>
+      <a href="{{ url_for('admin_logout') }}" class="admin-nav__logout">Sign out</a>
+    </nav>
+
+    <div class="admin-main">
+      <div class="topbar">
+        <div>
+          <div class="topbar__brand">Scanner</div>
+          <div class="topbar__sub">Games folder → already-installed matching</div>
+        </div>
+        <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, msg in messages %}
+          <div class="flash {{ category }}">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
+
+      <div class="panel">
+        <h2>Status</h2>
+        {% if not enabled %}
+          <p class="dim">Disabled: no games folder configured
+            (<code>PORTAL_GAMES_FOLDER</code>).</p>
+        {% else %}
+          <table class="info-table">
+            <tr><th>Folder</th><td><code>{{ games_folder }}</code></td></tr>
+            <tr><th>Installed games recorded</th><td>{{ installed_games|length }}</td></tr>
+            <tr><th>Suggestions awaiting review</th><td>{{ pending_matches|length }}</td></tr>
+          </table>
+          <form method="POST" action="{{ url_for('admin_scanner_scan_now') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn secondary">Scan now</button>
+          </form>
+        {% endif %}
+      </div>
+
+      {% if pending_matches %}
+      <div class="panel">
+        <h2>Possible matches</h2>
+        <p class="dim">A folder name looked close to one of these requests, but didn't carry
+          an exact Steam AppID tag - nothing is ever auto-resolved. Confirming renames the
+          folder to embed the AppID (so future scans match it exactly) and marks the request
+          done; rejecting just dismisses this one suggestion.</p>
+        {% for m in pending_matches %}
+          <div class="match-row">
+            <div class="match-row__body">
+              <div><strong>{{ m.request_name }}</strong> <span class="dim">({{ m.score }}% match)</span></div>
+              <div class="match-row__folder">{{ m.folder_name }}</div>
+            </div>
+            <div class="match-row__actions">
+              <form method="POST" action="{{ url_for('admin_scanner_confirm', match_id=m.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn small"
+                        data-confirm="Rename &quot;{{ m.folder_name }}&quot; to embed AppID {{ m.request_appid }} and mark &quot;{{ m.request_name }}&quot; done?">Confirm</button>
+              </form>
+              <form method="POST" action="{{ url_for('admin_scanner_reject', match_id=m.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn small secondary">Reject</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if installed_games %}
+      <div class="panel">
+        <h2>Installed games</h2>
+        <table class="info-table">
+          {% for g in installed_games %}
+          <tr>
+            <th><code>{{ g.folder_name }}</code></th>
+            <td>AppID {{ g.steam_appid }} · detected {{ g.detected_at[:10] }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

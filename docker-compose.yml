@@ -5,7 +5,7 @@ services:
     # can't disagree: the app binds PORTAL_PORT inside the container, and
     # HOST_PORT is what that gets published as on the host.
     ports:
-      - "${HOST_PORT:-5000}:${PORTAL_PORT:-5000}"
+      - "${HOST_PORT:-5001}:${PORTAL_PORT:-5001}"
     # Every PORTAL_* variable config.py reads is listed here. Anything missing
     # from this list is silently invisible to the app when it runs under
     # Docker, however faithfully it's been set in .env - compose only
@@ -13,7 +13,7 @@ services:
     # into the container. If you add a new setting to config.py, add it here too.
     environment:
       - PORTAL_SECRET_KEY=${PORTAL_SECRET_KEY:-}
-      - PORTAL_PORT=${PORTAL_PORT:-5000}
+      - PORTAL_PORT=${PORTAL_PORT:-5001}
       - PORTAL_WAITRESS_THREADS=${PORTAL_WAITRESS_THREADS:-8}
       - PORTAL_BEHIND_PROXY=${PORTAL_BEHIND_PROXY:-false}
       - PORTAL_FORCE_HTTPS_COOKIES=${PORTAL_FORCE_HTTPS_COOKIES:-false}
@@ -25,8 +25,20 @@ services:
       - PORTAL_STEAM_SEARCH_RESULT_LIMIT=${PORTAL_STEAM_SEARCH_RESULT_LIMIT:-10}
       - PORTAL_SEARCH_RATE_LIMIT=${PORTAL_SEARCH_RATE_LIMIT:-30}
       - PORTAL_SEARCH_RATE_WINDOW_SECONDS=${PORTAL_SEARCH_RATE_WINDOW_SECONDS:-60}
+      # Scanner: blank (default) leaves it disabled, same as native. To
+      # enable it under Docker, set both GAMES_FOLDER_HOST_PATH below (the
+      # real path on this host) *and* PORTAL_GAMES_FOLDER=/games in .env (the
+      # fixed in-container mount point the line under volumes: uses) - two
+      # variables because the app only ever sees the container-side path,
+      # never the host one.
+      - PORTAL_GAMES_FOLDER=${PORTAL_GAMES_FOLDER:-}
+      - PORTAL_SCANNER_INTERVAL_SECONDS=${PORTAL_SCANNER_INTERVAL_SECONDS:-1800}
+      - PORTAL_SCANNER_FUZZY_THRESHOLD=${PORTAL_SCANNER_FUZZY_THRESHOLD:-75}
     volumes:
       - portal_data:/app/instance
+      # Only takes effect once PORTAL_GAMES_FOLDER=/games is also set above -
+      # rename() needs write access, so this is deliberately not :ro.
+      - ${GAMES_FOLDER_HOST_PATH:-./games}:/games
     restart: unless-stopped
 
 volumes:

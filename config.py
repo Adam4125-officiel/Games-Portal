@@ -70,7 +70,7 @@ SECRET_KEY = _load_or_create_secret_key()
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
-PORT = int(os.environ.get("PORTAL_PORT", "5000"))
+PORT = int(os.environ.get("PORTAL_PORT", "5001"))
 SESSION_COOKIE_MAX_AGE_DAYS = 30
 WAITRESS_THREADS = int(os.environ.get("PORTAL_WAITRESS_THREADS", "8"))
 
@@ -126,3 +126,21 @@ JELLYFIN_URL = os.environ.get("PORTAL_JELLYFIN_URL", "").strip()
 # reusing the Steam search timeout above - someone is sitting there waiting on
 # this one, and a Jellyfin busy transcoding can be slow to answer.
 JELLYFIN_AUTH_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_JELLYFIN_AUTH_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner (see scanner.py)
+# ---------------------------------------------------------------------------
+# One subfolder per installed game, e.g. /mnt/games. Blank disables the
+# scanner entirely - nothing here ever runs, and the games-installed badge
+# never shows, until this is set.
+GAMES_FOLDER = os.environ.get("PORTAL_GAMES_FOLDER", "").strip()
+
+# How often the background scan re-walks GAMES_FOLDER, in seconds.
+SCANNER_INTERVAL_SECONDS = int(os.environ.get("PORTAL_SCANNER_INTERVAL_SECONDS", "1800"))
+
+# Fuzzy name-match confidence (0-100, rapidfuzz's own scale) a folder name
+# must clear against a request's title before it's even surfaced to the
+# admin as "possible match?" - below this, nothing happens at all. This is
+# not the bar for auto-resolving (nothing here ever auto-resolves a fuzzy
+# match; see ROADMAP.md/CLAUDE.md), just for bothering the admin with it.
+SCANNER_FUZZY_THRESHOLD = int(os.environ.get("PORTAL_SCANNER_FUZZY_THRESHOLD", "75"))
