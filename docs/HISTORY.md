@@ -5,6 +5,31 @@ verified against a real deployment (and when). Rules belong in `CLAUDE.md`; the
 stories behind them belong here. When `CLAUDE.md` gains a rule because something
 broke, it links to the write-up here instead of retelling it inline.
 
+## 2026-09-10 — DB backup/restore's missing CSRF token, caught by live testing not pytest
+
+Added `/admin/backup` (download a snapshot, restore one) inspired by
+status-portal's equivalent. Every state-changing route in this app requires a
+`csrf_token` hidden field per CLAUDE.md's CSRF convention - the restore
+form's was simply never added when the template was written.
+
+`pytest tests/` didn't catch it: the Flask test client runs with
+`app.testing = True`, and this app's CSRF check explicitly short-circuits
+whenever `app.testing` is set (see `app.py`'s `_check_csrf()` - the same
+exemption that lets tests post plain dicts instead of simulating a rendered
+form). A live Playwright pass against a real dev server did - the "Restore
+this backup" button produced a 400 instead of a flash message, because the
+real (non-`TESTING`) CSRF check ran for the first time and had nothing to
+check against.
+
+Fixed by adding the missing field, and by adding a regression test that
+deliberately turns `TESTING` off, renders the real `/admin/backup` page,
+extracts the token Jinja actually put in the HTML, and round-trips it through
+a real POST - the same shape as the pre-existing `/admin/login` CSRF test,
+just proving the token survives the whole render-and-submit path instead of
+only that the check exists. Every future POST form in this app should get
+one of these, not just a route-level test that never exercises the real
+check.
+
 ## 2026-09-10 — Jellyfin 12.0 disabled legacy authorization; fixed before it ever shipped broken
 
 Jellyfin 12.0 released 2026-09-08 (jumping straight from 10.11.x - there's no
