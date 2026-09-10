@@ -3,6 +3,7 @@ db.py — The entire database layer (SQLite). No ORM, plain SQL, hand-rolled
 schema management: see CLAUDE.md's "No ORM, no migration framework" rule.
 """
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -55,12 +56,37 @@ def init_db():
         )
     """)
 
+    # A local mirror of what Seerr holds for each linked account - see
+    # seerr.py. Wiped and rewritten wholesale on every successful sync
+    # (replace_seerr_contacts), never touched on a failed one, so an
+    # unreachable Seerr can't erase contact details that were working.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS seerr_contacts (
+            jellyfin_user_id TEXT PRIMARY KEY,
+            seerr_user_id TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            discord_id TEXT NOT NULL DEFAULT '',
+            synced_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def looks_like_email(value):
+    """Whether `value` could be delivered to at all. Blank is False -
+    "nothing here" and "something that isn't an address" both mean "can't
+    send", and every caller treats them identically."""
+    return bool(value) and bool(EMAIL_RE.match(value.strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +177,53 @@ def update_request_status(request_id, status, admin_note):
                  (status, admin_note, now_iso(), request_id))
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Seerr contacts (see seerr.py) - READ side only touches this app's own
+# database; nothing here ever calls out to Seerr.
+# ---------------------------------------------------------------------------
+def replace_seerr_contacts(contacts):
+    """Full replace, in one transaction. Only ever called after a successful
+    sync (see seerr.sync_seerr_contacts), so a failed one leaves the previous
+    details completely intact rather than wiping everyone's contact info."""
+    stamp = now_iso()
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM seerr_contacts")
+            conn.executemany(
+                "INSERT INTO seerr_contacts (jellyfin_user_id, seerr_user_id, display_name, "
+                "email, discord_id, synced_at) VALUES (?, ?, ?, ?, ?, ?)",
+                [(c["jellyfin_user_id"], str(c["seerr_user_id"]), c.get("display_name", ""),
+                  c.get("email", ""), c.get("discord_id", ""), stamp)
+                 for c in contacts if c.get("jellyfin_user_id")])
+    finally:
+        conn.close()
+
+
+def get_seerr_contact(jellyfin_user_id):
+    if not jellyfin_user_id:
+        return None
+    conn = get_db()
+    row = conn.execute("SELECT * FROM seerr_contacts WHERE jellyfin_user_id=?",
+                        (jellyfin_user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def count_seerr_contacts():
+    conn = get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN email != '' OR discord_id != '' THEN 1 ELSE 0 END) AS with_contact "
+        "FROM seerr_contacts").fetchone()
+    conn.close()
+    return {"total": row["total"] or 0, "with_contact": row["with_contact"] or 0}
+
+
+def seerr_contacts_synced_at():
+    conn = get_db()
+    row = conn.execute("SELECT MAX(synced_at) AS ts FROM seerr_contacts").fetchone()
+    conn.close()
+    return row["ts"] if row else None

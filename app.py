@@ -15,6 +15,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import config
 import db
 import jellyfin_auth
+import notifications
+import seerr
 import steam
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -262,6 +264,9 @@ def submit_request():
     db.create_request(summary["appid"], summary["name"], summary["icon_url"],
                        summary["short_description"], user["id"], user["name"])
     flash(f'Requested "{summary["name"]}".', "success")
+    notifications.notify_admin(
+        f'New request: {summary["name"]}',
+        f'{user["name"]} requested "{summary["name"]}".')
     return redirect(next_url)
 
 
@@ -374,7 +379,8 @@ def admin_requests():
 @app.route("/admin/requests/<int:request_id>/status", methods=["POST"])
 @login_required
 def admin_update_request(request_id):
-    if db.get_request(request_id) is None:
+    row = db.get_request(request_id)
+    if row is None:
         abort(404)
     status = request.form.get("status", "")
     note = request.form.get("admin_note", "").strip()[:500]
@@ -383,10 +389,81 @@ def admin_update_request(request_id):
     else:
         db.update_request_status(request_id, status, note)
         flash("Request updated.", "success")
+        if status != row["status"]:
+            _notify_visitor_of_status_change(row, status, note)
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
+def _notify_visitor_of_status_change(row, new_status, note):
+    """Best-effort email to the visitor who made this request, if this app
+    has an address for them on file - see seerr.py. Never raises: a
+    notification failing must never turn a successful status update into an
+    error page for the admin. There is no per-visitor Discord delivery yet
+    (that needs an actual bot, not just a webhook) - see ROADMAP.md."""
+    contact = db.get_seerr_contact(row["requested_by_id"])
+    if not contact or not contact["email"]:
+        return
+    subject = f'Your request for "{row["name"]}" is now {new_status}'
+    body = f'"{row["name"]}" is now marked as {new_status}.'
+    if note:
+        body += f"\n\nNote from the admin: {note}"
+    notifications.send_email(subject, body, recipients=[contact["email"]])
+
+
+# ---------------------------------------------------------------------------
+# Notifications and Seerr contact sync
+# ---------------------------------------------------------------------------
+@app.route("/admin/notifications")
+@login_required
+def admin_notifications():
+    return render_template(
+        "admin_notifications.html",
+        channels=notifications.channel_summary(),
+        recipients=", ".join(notifications.admin_email_recipients()),
+        seerr_enabled=seerr.is_enabled(),
+        seerr_counts=db.count_seerr_contacts(),
+        seerr_synced_at=db.seerr_contacts_synced_at(),
+    )
+
+
+@app.route("/admin/notifications/settings", methods=["POST"])
+@login_required
+def admin_notifications_settings():
+    db.set_setting(notifications.RECIPIENTS_SETTING,
+                   notifications.normalize_recipients(request.form.get("recipients", "")))
+    flash("Notification preferences saved.", "success")
+    return redirect(url_for("admin_notifications"))
+
+
+@app.route("/admin/notifications/test", methods=["POST"])
+@login_required
+def admin_notifications_test():
+    if not (notifications.discord_configured() or notifications.email_configured()):
+        flash("No notification channel is configured yet.", "error")
+        return redirect(url_for("admin_notifications"))
+    notifications.notify_admin("Test notification",
+                               "If you're reading this, notifications from Games Portal are working.")
+    flash("Test notification sent - delivery failures are logged, not reported back here.", "success")
+    return redirect(url_for("admin_notifications"))
+
+
+@app.route("/admin/notifications/seerr-sync", methods=["POST"])
+@login_required
+def admin_seerr_sync_now():
+    if not seerr.is_enabled():
+        flash("Seerr isn't configured (PORTAL_SEERR_URL/PORTAL_SEERR_API_KEY).", "error")
+        return redirect(url_for("admin_notifications"))
+    try:
+        total, with_contact = seerr.sync_contacts()
+    except seerr.SyncError as e:
+        flash(f"Seerr sync failed: {e}", "error")
+    else:
+        flash(f"Synced {total} linked Seerr account(s), {with_contact} with contact details.", "success")
+    return redirect(url_for("admin_notifications"))
 
 
 if __name__ == "__main__":
     db.init_db()
+    seerr.start_background_checker()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
     app.run(host="127.0.0.1", port=config.PORT, debug=True)

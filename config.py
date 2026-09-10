@@ -70,7 +70,7 @@ SECRET_KEY = _load_or_create_secret_key()
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
-PORT = int(os.environ.get("PORTAL_PORT", "5000"))
+PORT = int(os.environ.get("PORTAL_PORT", "5001"))
 SESSION_COOKIE_MAX_AGE_DAYS = 30
 WAITRESS_THREADS = int(os.environ.get("PORTAL_WAITRESS_THREADS", "8"))
 
@@ -126,3 +126,42 @@ JELLYFIN_URL = os.environ.get("PORTAL_JELLYFIN_URL", "").strip()
 # reusing the Steam search timeout above - someone is sitting there waiting on
 # this one, and a Jellyfin busy transcoding can be slow to answer.
 JELLYFIN_AUTH_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_JELLYFIN_AUTH_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
+# Notifications (see notifications.py) - Discord webhook + email, admin-facing
+# only for now. Both blank by default (disabled).
+# ---------------------------------------------------------------------------
+DISCORD_WEBHOOK_URL = os.environ.get("PORTAL_DISCORD_WEBHOOK_URL", "").strip()
+
+# Email is considered configured only when host, from-address and at least one
+# recipient are all present - a half-filled block is treated as "not set up"
+# rather than failing at send time. Recipients are a DB setting
+# (admin_notify_email, editable at /admin/notifications) per this project's
+# config split - who gets told is a routine choice, not deployment config -
+# with this env var as the fallback for an install that set it before that
+# existed.
+SMTP_HOST = os.environ.get("PORTAL_SMTP_HOST", "").strip()
+SMTP_PORT = int(os.environ.get("PORTAL_SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("PORTAL_SMTP_USERNAME", "").strip()
+# Deliberately not .strip()ed: a password is whatever the provider issued, and
+# trimming it would silently break a legitimate one that ends in a space.
+SMTP_PASSWORD = os.environ.get("PORTAL_SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("PORTAL_SMTP_FROM", "").strip()
+SMTP_TO = os.environ.get("PORTAL_SMTP_TO", "").strip()
+# starttls (587, the usual), ssl (465, implicit TLS), or none (25, unencrypted -
+# only sane for an SMTP server on the same machine or LAN).
+SMTP_SECURITY = os.environ.get("PORTAL_SMTP_SECURITY", "starttls").strip().lower()
+SMTP_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SMTP_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
+# Seerr (Jellyseerr/Overseerr) contact sync - READ ONLY. Every call this app
+# makes to Seerr is a GET; nothing here ever creates, approves, or modifies a
+# request or account on Seerr's side. The only thing pulled is each linked
+# account's email/Discord ID, so a status change on a game request here can
+# notify the visitor who asked for it. Blank disables the sync entirely.
+# ---------------------------------------------------------------------------
+SEERR_URL = os.environ.get("PORTAL_SEERR_URL", "").strip()
+SEERR_API_KEY = os.environ.get("PORTAL_SEERR_API_KEY", "").strip()
+SEERR_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SEERR_TIMEOUT_SECONDS", "10"))
+# How often the background sync re-reads Seerr's user list, in seconds.
+SEERR_SYNC_INTERVAL_SECONDS = int(os.environ.get("PORTAL_SEERR_SYNC_INTERVAL_SECONDS", "3600"))

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Admin{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="admin-shell">
+    <nav class="admin-nav">
+      <div class="admin-nav__brand">⚙ Admin</div>
+      <a href="{{ url_for('admin_requests') }}">Requests</a>
+      <a href="{{ url_for('admin_notifications') }}" class="active">Notifications</a>
+      <a href="{{ url_for('admin_logout') }}" class="admin-nav__logout">Sign out</a>
+    </nav>
+
+    <div class="admin-main">
+      <div class="topbar">
+        <div>
+          <div class="topbar__brand">Notifications</div>
+          <div class="topbar__sub">Discord and email alerts, and Seerr contact sync</div>
+        </div>
+        <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, msg in messages %}
+          <div class="flash {{ category }}">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
+
+      <div class="panel">
+        <h2>Admin alerts</h2>
+        <p class="dim">Sent whenever someone submits a new request. Each channel below is
+          configured through environment variables (<code>.env</code>) - see
+          <code>.env.example</code>.</p>
+        <table class="info-table">
+          {% for c in channels %}
+          <tr>
+            <th>{{ c.label }}</th>
+            <td>
+              {% if c.configured %}<span class="badge done">configured</span>
+              {% else %}<span class="badge rejected">not set up</span>{% endif %}
+              <span class="dim"> · {{ c.description }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+
+        <form method="POST" action="{{ url_for('admin_notifications_settings') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="field">
+            <label for="recipients">Email recipients</label>
+            <input type="text" id="recipients" name="recipients" value="{{ recipients }}"
+                   placeholder="you@example.com, someone-else@example.com">
+            <p class="field-hint">Comma-separated. Leave blank to use
+              <code>PORTAL_SMTP_TO</code> from <code>.env</code> instead.</p>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn">Save</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Test</h2>
+        <p class="dim">Sends a test message to every configured channel above right now.</p>
+        <form method="POST" action="{{ url_for('admin_notifications_test') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn secondary">Send test notification</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Seerr contact sync</h2>
+        <p class="dim">Read-only: this app only ever reads your Seerr (Jellyseerr/Overseerr)
+          user list, to learn each linked account's email and Discord ID - nothing here
+          ever creates, approves, or changes anything on Seerr's side. Used to email a
+          visitor when their own request's status changes. Configured via
+          <code>PORTAL_SEERR_URL</code> / <code>PORTAL_SEERR_API_KEY</code> in
+          <code>.env</code>.</p>
+        <table class="info-table">
+          <tr>
+            <th>Status</th>
+            <td>{% if seerr_enabled %}<span class="badge done">configured</span>
+                {% else %}<span class="badge rejected">not set up</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <th>Cached accounts</th>
+            <td>{{ seerr_counts.total }} linked, {{ seerr_counts.with_contact }} with contact details</td>
+          </tr>
+          {% if seerr_synced_at %}
+          <tr><th>Last synced</th><td>{{ seerr_synced_at[:16].replace('T', ' ') }} UTC</td></tr>
+          {% endif %}
+        </table>
+        <form method="POST" action="{{ url_for('admin_seerr_sync_now') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn secondary" {{ 'disabled' if not seerr_enabled }}>Sync now</button>
+        </form>
+        {% if not seerr_enabled %}
+          <p class="field-hint">Enabled once PORTAL_SEERR_URL and PORTAL_SEERR_API_KEY are set.</p>
+        {% endif %}
+        <p class="field-hint">Per-visitor Discord DMs aren't wired up yet - that needs a real
+          Discord bot (a persistent connection), which is a separate, optional piece of
+          infrastructure. Discord IDs are still collected and cached here so that's a
+          smaller addition later. See ROADMAP.md.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

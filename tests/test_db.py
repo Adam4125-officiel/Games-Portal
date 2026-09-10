@@ -58,3 +58,53 @@ def test_get_active_request_for_appid(isolated_db):
     db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
     found = db.get_active_request_for_appid(70)
     assert found["name"] == "Half-Life"
+
+
+# ---------------------------------------------------------------------------
+# Email validation
+# ---------------------------------------------------------------------------
+def test_looks_like_email():
+    import db
+    assert db.looks_like_email("someone@example.com") is True
+    assert db.looks_like_email("not-an-email") is False
+    assert db.looks_like_email("") is False
+    assert db.looks_like_email(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Seerr contacts
+# ---------------------------------------------------------------------------
+def test_replace_seerr_contacts_full_replace(isolated_db):
+    import db
+    db.replace_seerr_contacts([
+        {"jellyfin_user_id": "jf-1", "seerr_user_id": "1", "display_name": "Alice",
+         "email": "alice@example.com", "discord_id": "999"},
+        {"jellyfin_user_id": "jf-2", "seerr_user_id": "2", "display_name": "Bob",
+         "email": "", "discord_id": ""},
+    ])
+    assert db.get_seerr_contact("jf-1")["email"] == "alice@example.com"
+    counts = db.count_seerr_contacts()
+    assert counts["total"] == 2
+    assert counts["with_contact"] == 1
+
+    # A second replace wipes the first wholesale.
+    db.replace_seerr_contacts([
+        {"jellyfin_user_id": "jf-3", "seerr_user_id": "3", "display_name": "Carol",
+         "email": "carol@example.com", "discord_id": ""},
+    ])
+    assert db.get_seerr_contact("jf-1") is None
+    assert db.get_seerr_contact("jf-3")["display_name"] == "Carol"
+
+
+def test_get_seerr_contact_missing_returns_none(isolated_db):
+    import db
+    assert db.get_seerr_contact("nope") is None
+    assert db.get_seerr_contact("") is None
+
+
+def test_seerr_contacts_synced_at_tracks_the_latest_sync(isolated_db):
+    import db
+    assert db.seerr_contacts_synced_at() is None
+    db.replace_seerr_contacts([{"jellyfin_user_id": "jf-1", "seerr_user_id": "1",
+                               "display_name": "Alice", "email": "", "discord_id": ""}])
+    assert db.seerr_contacts_synced_at() is not None

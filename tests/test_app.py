@@ -163,3 +163,104 @@ def test_csrf_protection_rejects_missing_token(isolated_db):
             assert resp.status_code == 400
     finally:
         app_module.app.config["TESTING"] = True
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+def test_new_request_notifies_admin(visitor_session, monkeypatch):
+    import notifications
+    import steam
+
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                        lambda appid: {"appid": appid, "name": "Half-Life", "icon_url": "",
+                                       "short_description": ""})
+    calls = []
+    monkeypatch.setattr(notifications, "notify_admin", lambda title, message: calls.append((title, message)))
+
+    visitor_session.post("/request", data={"appid": "70", "next": "/"})
+    assert len(calls) == 1
+    assert "Half-Life" in calls[0][0]
+
+
+def test_status_change_emails_the_visitor_if_a_seerr_contact_exists(admin_client, monkeypatch):
+    import db
+    import notifications
+
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.replace_seerr_contacts([{"jellyfin_user_id": "jf-1", "seerr_user_id": "1",
+                               "display_name": "Alice", "email": "alice@example.com",
+                               "discord_id": ""}])
+    calls = []
+    monkeypatch.setattr(notifications, "send_email",
+                        lambda subject, body, recipients: calls.append((subject, body, recipients)))
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "approved", "admin_note": ""})
+    assert len(calls) == 1
+    assert calls[0][2] == ["alice@example.com"]
+
+
+def test_status_change_without_a_seerr_contact_sends_nothing(admin_client, monkeypatch):
+    import db
+    import notifications
+
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    calls = []
+    monkeypatch.setattr(notifications, "send_email",
+                        lambda *a, **k: calls.append(1))
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "approved", "admin_note": ""})
+    assert calls == []
+
+
+def test_status_change_to_the_same_status_does_not_notify(admin_client, monkeypatch):
+    import db
+    import notifications
+
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.replace_seerr_contacts([{"jellyfin_user_id": "jf-1", "seerr_user_id": "1",
+                               "display_name": "Alice", "email": "alice@example.com",
+                               "discord_id": ""}])
+    calls = []
+    monkeypatch.setattr(notifications, "send_email", lambda *a, **k: calls.append(1))
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "pending", "admin_note": ""})
+    assert calls == []
+
+
+def test_admin_notifications_requires_login(client):
+    resp = client.get("/admin/notifications")
+    assert resp.status_code == 302
+
+
+def test_admin_notifications_page_loads(admin_client):
+    resp = admin_client.get("/admin/notifications")
+    assert resp.status_code == 200
+    assert b"Notifications" in resp.data
+
+
+def test_admin_notifications_settings_saves_recipients(admin_client):
+    import db
+    admin_client.post("/admin/notifications/settings", data={"recipients": "a@example.com, b@example.com"})
+    assert db.get_setting("admin_notify_email") == "a@example.com, b@example.com"
+
+
+def test_admin_notifications_test_requires_a_configured_channel(admin_client, monkeypatch):
+    import notifications
+    monkeypatch.setattr(notifications, "discord_configured", lambda: False)
+    monkeypatch.setattr(notifications, "email_configured", lambda: False)
+    resp = admin_client.post("/admin/notifications/test", follow_redirects=True)
+    assert b"No notification channel" in resp.data
+
+
+def test_admin_seerr_sync_now_requires_configuration(admin_client):
+    resp = admin_client.post("/admin/notifications/seerr-sync", follow_redirects=True)
+    assert b"isn&#39;t configured" in resp.data or b"isn't configured" in resp.data
+
+
+def test_admin_seerr_sync_now_reports_success(admin_client, monkeypatch):
+    import seerr
+    monkeypatch.setattr(seerr, "is_enabled", lambda: True)
+    monkeypatch.setattr(seerr, "sync_contacts", lambda: (3, 2))
+    resp = admin_client.post("/admin/notifications/seerr-sync", follow_redirects=True)
+    assert b"Synced 3" in resp.data
