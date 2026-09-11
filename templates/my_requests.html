@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}My requests — Games Portal{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">My requests</div>
+      <div class="topbar__sub">What you've asked for and where it stands</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if not requests %}
+    <p class="empty-state">You haven't requested anything yet.</p>
+  {% endif %}
+
+  <div class="request-list">
+    {% for r in requests %}
+      <div class="request-row">
+        {% if r.icon_url %}
+          <img class="request-row__icon" src="{{ r.icon_url }}" alt="" loading="lazy">
+        {% else %}
+          <div class="request-row__icon result-card__icon--placeholder">🎮</div>
+        {% endif %}
+        <div class="request-row__body">
+          <div class="request-row__title">
+            {{ r.name }}
+            <span class="badge {{ r.status }}">{{ r.status }}</span>
+          </div>
+          {% if r.short_description %}
+            <p class="request-row__desc">{{ r.short_description }}</p>
+          {% endif %}
+          <p class="request-row__meta">Requested {{ r.created_at }}
+            · <a href="https://store.steampowered.com/app/{{ r.steam_appid }}" target="_blank" rel="noopener">Steam page</a></p>
+          {% if r.admin_note %}
+            <p class="request-row__note">Note from the admin: {{ r.admin_note }}</p>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

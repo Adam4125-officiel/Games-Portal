@@ -343,6 +343,16 @@ def submit_request():
     return redirect(next_url)
 
 
+@app.route("/my-requests")
+@user_login_required
+def my_requests():
+    """A visitor's own request history - strictly scoped to their own Jellyfin
+    id (see current_user()), never anyone else's. No Jellyfin account data of
+    any kind here - Jellyfin stays login/logout only in this app."""
+    requests_list = db.list_requests(requested_by_id=current_user()["id"])
+    return render_template("my_requests.html", requests=requests_list)
+
+
 # ---------------------------------------------------------------------------
 # Visitor sign-in (Jellyfin-backed). Entirely separate from /admin/login below.
 # ---------------------------------------------------------------------------

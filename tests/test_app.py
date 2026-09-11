@@ -86,6 +86,29 @@ def test_request_rejects_unresolvable_appid(visitor_session, monkeypatch):
     assert b"Could not look up" in resp.data
 
 
+# ---------------------------------------------------------------------------
+# "My requests" (Jellyfin used only for login/logout - see the module note
+# on jellyfin_auth.py; this page is a pure view over this app's own data)
+# ---------------------------------------------------------------------------
+def test_my_requests_requires_sign_in(client):
+    resp = client.get("/my-requests")
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+
+
+def test_my_requests_shows_only_the_signed_in_visitors_own_requests(visitor_session):
+    """The test that actually proves the "never let anyone browse another
+    visitor's requests" constraint - two different requesters, only one shown."""
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-user-1", "alice")  # matches visitor_session's id
+    db.create_request(220, "Half-Life 2", "", "", "someone-else", "Bob")
+
+    resp = visitor_session.get("/my-requests")
+    assert resp.status_code == 200
+    assert b"Half-Life 2" not in resp.data
+    assert b"Half-Life" in resp.data
+
+
 def test_visitor_login_rejects_bad_credentials(client, monkeypatch):
     import jellyfin_auth
     monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)

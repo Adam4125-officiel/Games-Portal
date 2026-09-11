@@ -125,13 +125,20 @@ def active_request_appids(appids):
     return {row["steam_appid"]: row["status"] for row in rows}
 
 
-def list_requests(status=None):
-    conn = get_db()
+def list_requests(status=None, requested_by_id=None):
+    """All requests, newest first - optionally narrowed to one status and/or
+    one requester. The `requested_by_id` filter is what keeps the "my requests"
+    page (app.py's /my-requests) scoped to a single visitor's own data."""
+    clauses, params = [], []
     if status:
-        rows = conn.execute("SELECT * FROM requests WHERE status=? ORDER BY created_at DESC",
-                             (status,)).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM requests ORDER BY created_at DESC").fetchall()
+        clauses.append("status=?")
+        params.append(status)
+    if requested_by_id:
+        clauses.append("requested_by_id=?")
+        params.append(requested_by_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_db()
+    rows = conn.execute(f"SELECT * FROM requests {where} ORDER BY created_at DESC", params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 

@@ -57,6 +57,27 @@ def test_delete_request_is_a_no_op_for_an_unknown_id(isolated_db):
     assert len(db.list_requests()) == 1
 
 
+def test_list_requests_filters_by_requested_by_id(isolated_db):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.create_request(220, "Half-Life 2", "", "", "jf-2", "Bob")
+
+    mine = db.list_requests(requested_by_id="jf-1")
+    assert len(mine) == 1
+    assert mine[0]["name"] == "Half-Life"
+
+
+def test_list_requests_combines_status_and_requested_by_id_filters(isolated_db):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.create_request(220, "Half-Life 2", "", "", "jf-1", "Alice")
+    db.update_request_status(rid, "approved", "")
+
+    approved_mine = db.list_requests(status="approved", requested_by_id="jf-1")
+    assert len(approved_mine) == 1
+    assert approved_mine[0]["name"] == "Half-Life"
+
+
 def test_active_request_appids_excludes_rejected(isolated_db):
     import db
     rid1 = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
