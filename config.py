@@ -3,12 +3,15 @@ config.py — All configuration in one place, read from environment variables
 (or a local .env file via python-dotenv). Nothing else in this app should read
 os.environ directly - add new settings here instead.
 """
+import logging
 import os
 import secrets
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_logger = logging.getLogger(__name__)
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -60,8 +63,22 @@ def _load_or_create_secret_key():
         fd = os.open(SECRET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(key)
-    except OSError:
-        pass
+    except OSError as e:
+        # Must never be silent: a key that fails to persist still works fine for
+        # *this* process, so nothing looks wrong right now - but the next process
+        # start (a crash, a Docker restart, anything) generates yet another
+        # ephemeral key the same way, silently signing out every admin and
+        # visitor session every single time. From the outside that presents as
+        # unexplained "random disconnects," not as an obvious startup failure -
+        # exactly the class of bug this log line exists to surface immediately
+        # instead of leaving someone to rediscover it session by session.
+        _logger.error(
+            "Could not persist a new session secret key to %s (%s). Using a "
+            "one-off key for THIS PROCESS ONLY - every admin and visitor "
+            "session will be invalidated the next time this process restarts, "
+            "and again every time after that until this becomes writable. "
+            "Check the ownership/permissions of %s.",
+            SECRET_KEY_FILE, e, os.path.dirname(SECRET_KEY_FILE))
     return key
 
 
