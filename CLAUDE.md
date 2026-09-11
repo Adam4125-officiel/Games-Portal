@@ -41,11 +41,18 @@ file", that belongs in a different project.
   that to keep working** - going private again would 404 every check/download with
   no code change needed to reproduce it (see docs/HISTORY.md, 2026-09-10).
 
-## Open decisions — see `ROADMAP.md`
+## Settled decisions from the original spec
 
-This spec has a few things intentionally left open (folder→game matching strategy,
-visitor identity, deployment mode). Don't silently pick one while building — they're
-listed in `ROADMAP.md` with the tradeoffs; confirm with the user first.
+The original spec deliberately left three things open: folder→game matching
+strategy, visitor identity, deployment mode. All three are now settled and
+built - visitor identity is Jellyfin-backed sign-in (login/logout only, no
+further account data - see `jellyfin_auth.py`'s module docstring), both
+native Python and Docker are supported, and the folder scanner
+(`scanner.py`) tags a folder with its Steam AppID when known and falls back
+to admin-confirmed fuzzy matching otherwise - see README's "Games-folder
+scanner" section for the tag format. Don't relitigate these; if a genuinely
+new open decision comes up while building, it goes in `ROADMAP.md` the same
+way, confirmed with the user first rather than picked silently.
 
 ## Visual identity — same as status-portal, don't design a new one
 
@@ -178,13 +185,13 @@ stale token and looks exactly like a failure.
     jellyfin_auth.py        # visitor identity — live Jellyfin credential check
     updater.py               # self-update: check/download/verify/backup/replace/rollback
     update.py                # CLI wrapper around updater.py, usable when the web UI is broken
-    scanner.py               # games-folder scan + matching — not built yet, waits on ROADMAP.md
+    scanner.py               # games-folder scan + tag/fuzzy matching, installed_games table
     requirements.txt / requirements-dev.txt
     .env.example
     Dockerfile / docker-compose.yml / .dockerignore
     static/css/style.css    # design tokens + layout, carried over from status-portal
     static/js/theme.js      # light/dark toggle
-    static/js/admin_update.js  # confirm() guard on the "Update now" button
+    static/js/admin_confirm.js  # confirm() guard on any button[data-confirm]
     templates/                  # admin_base.html holds the shared admin nav shell
-    tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, updater.py, app.py routes
-    instance/                # portal.db + secret_key + update_backups/, created automatically — gitignored
+    tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, updater.py, scanner.py, app.py routes
+    instance/                # portal.db + secret_key + update_backups/ + db_backups/, gitignored

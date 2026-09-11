@@ -5,22 +5,6 @@ deleted down to one index line once it's done (the code and `docs/HISTORY.md`
 become the better record at that point). See `CLAUDE.md` for how the code actually
 works.
 
-## Open decisions (confirm before/while building — don't guess silently)
-
-- **Folder → game matching strategy.** Matching purely on the folder name string
-  (a naive Sonarr-style scan) is fragile — a typo, punctuation, or a
-  differently-formatted name (`Half-Life 2` vs `half_life_2_2004`) misses a real
-  match. Two sturdier options:
-  - (a) embed the Steam AppID in the folder name or a small sidecar file the admin
-    drops in once per game, exact-match on that — most reliable, small one-time
-    admin cost per game.
-  - (b) fuzzy-match the name (e.g. `rapidfuzz`) with a confidence threshold;
-    anything below it surfaces to the admin as "possible match?" instead of
-    auto-resolving.
-
-  Don't ship pure exact-string matching as the only mode — pick (a), (b), or both.
-  Waits for the folder scanner build session — see `scanner.py` (not written yet).
-
 ## Pending user action
 
 - **Make this repo public on GitHub.** Decided (not still open) — the self-update
@@ -34,8 +18,6 @@ works.
 
 ## Ideas (unranked)
 
-- Show a small "already installed" badge directly on a search result if the
-  scanner has already matched it, instead of only surfacing that inside a request.
 - **Discord/email notifications and Seerr contact sync, delegated to status-portal
   rather than built here.** Considered building these directly in this repo
   (Discord webhook + SMTP email + a Seerr read-only sync, status-portal's own
