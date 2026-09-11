@@ -155,6 +155,24 @@ def init_db():
             last_seen_at TEXT NOT NULL
         )
     """)
+    # CREATE TABLE IF NOT EXISTS is a silent no-op against a table that already
+    # exists under an older/incomplete shape - a real install can hit this: an
+    # earlier in-app update once applied a since-superseded version of this
+    # table (a differently-shaped scanner attempt from before this one), and
+    # the live database still has it. Confirmed against a real report: `python
+    # serve_waitress.py` crashed every page load with `sqlite3.OperationalError:
+    # no such column: status` because exactly this happened - the table existed
+    # without a status column, and CREATE TABLE IF NOT EXISTS never touched it.
+    # _ensure_column() is idempotent, so this is safe to run on every startup
+    # regardless of whether the table was just freshly created above.
+    _ensure_column(conn, "installed_games", "steam_appid", "INTEGER")
+    _ensure_column(conn, "installed_games", "status", "TEXT NOT NULL DEFAULT 'unmatched'")
+    _ensure_column(conn, "installed_games", "candidate_appid", "INTEGER")
+    _ensure_column(conn, "installed_games", "candidate_name", "TEXT")
+    _ensure_column(conn, "installed_games", "candidate_score", "REAL")
+    _ensure_column(conn, "installed_games", "created_at", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "installed_games", "updated_at", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "installed_games", "last_seen_at", "TEXT NOT NULL DEFAULT ''")
 
     conn.commit()
     conn.close()

@@ -166,3 +166,43 @@ def test_restore_from_file_replaces_the_live_database(isolated_db, tmp_path):
     rows = db.list_requests()
     assert len(rows) == 1
     assert rows[0]["name"] == "Half-Life 2"
+
+
+# ---------------------------------------------------------------------------
+# Regression: a real production crash. An install that had already applied an
+# earlier, differently-shaped version of the scanner's table (before this
+# feature's current column set was settled) crashed every page load with
+# sqlite3.OperationalError: no such column: status - CREATE TABLE IF NOT
+# EXISTS is a silent no-op against a table that already exists, so the
+# missing column was never added on any of that install's later restarts.
+# ---------------------------------------------------------------------------
+def test_init_db_repairs_an_installed_games_table_missing_columns(tmp_path, monkeypatch):
+    import sqlite3
+    import db
+    db_path = str(tmp_path / "legacy.db")
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+
+    # An older/incomplete installed_games table, as if left behind by a
+    # previous version of this app - missing every column added since,
+    # including the one the real crash report named specifically.
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE installed_games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_name TEXT NOT NULL UNIQUE
+        )
+    """)
+    conn.execute("INSERT INTO installed_games (folder_name) VALUES (?)",
+                 ("Half-Life 2 {steamapp-220}",))
+    conn.commit()
+    conn.close()
+
+    db.init_db()  # must not raise, and must repair the table in place
+
+    row = db.get_scanned_folder(1)
+    assert row["folder_name"] == "Half-Life 2 {steamapp-220}"  # pre-existing data survives
+    assert row["status"] == "unmatched"  # the missing column now exists with a sane default
+
+    # The exact call from the production traceback now works.
+    db.upsert_scanned_folder("Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
+    assert db.matched_appids() == {220}
