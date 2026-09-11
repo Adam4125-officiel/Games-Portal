@@ -60,6 +60,8 @@
     {% endfor %}
   </div>
   <p class="empty-state" id="collections-no-match" hidden>No games match your filter.</p>
+
+  <footer class="foot">games-portal {{ version_display }} · <a href="{{ repo_url }}" target="_blank" rel="noopener">Like this page? ⭐ Check it out on GitHub</a></footer>
 </div>
 <script src="{{ url_for('static', filename='js/collections_filter.js') }}"></script>
 <script src="{{ url_for('static', filename='js/rail_scroll.js') }}"></script>

@@ -101,7 +101,8 @@ app.jinja_env.globals["csrf_token"] = _get_csrf_token
 
 @app.context_processor
 def _inject_globals():
-    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled()}
+    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled(),
+            "version_display": config.VERSION_DISPLAY, "repo_url": updater.REPO_URL}
 
 
 # ---------------------------------------------------------------------------

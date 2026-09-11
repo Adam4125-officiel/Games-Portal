@@ -7,6 +7,23 @@ def test_index_loads(client):
     assert b"Games Portal" in resp.data
 
 
+def test_index_footer_links_to_the_repo(client):
+    import config
+    import updater
+    resp = client.get("/")
+    assert b"games-portal" in resp.data
+    assert config.VERSION_DISPLAY.encode() in resp.data
+    assert f'href="{updater.REPO_URL}"'.encode() in resp.data
+    assert b"Check it out on GitHub" in resp.data
+
+
+def test_collections_footer_links_to_the_repo(client):
+    import updater
+    resp = client.get("/collections")
+    assert f'href="{updater.REPO_URL}"'.encode() in resp.data
+    assert b"Check it out on GitHub" in resp.data
+
+
 def test_search_shows_results(client, monkeypatch):
     import steam
 

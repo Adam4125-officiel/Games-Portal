@@ -65,6 +65,16 @@
 body {
   margin: 0;
   background: var(--bg-void);
+  /* Carried over from status-portal's own body rule: a faint grid texture
+     over the void background, part of the shared "network control room"
+     look - same --border-soft token this repo already has, so it already
+     flips correctly between the dark and light themes with no extra work. */
+  background-image:
+    linear-gradient(var(--border-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-soft) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-attachment: fixed;
+  background-position: center top;
   color: var(--text-primary);
   font-family: var(--font-body);
   line-height: 1.5;
@@ -621,6 +631,16 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .request-row__form input[type="text"] { flex: 1; min-width: 120px; }
 
 .request-row__delete { flex-shrink: 0; align-self: flex-start; }
+
+/* ---------- Footer (public pages only) - carried over as-is from
+   status-portal's own footer.foot rule ---------- */
+.foot {
+  margin-top: 60px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
 
 /* ---------- Errors ---------- */
 .error-shell {
