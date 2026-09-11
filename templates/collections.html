@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Collections — Games Portal{% endblock %}
+{% block body %}
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">📚 Collections</div>
+      <div class="topbar__sub">Games already available on this server</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% if games %}
+    <form class="search-form" onsubmit="return false">
+      <input type="search" id="collections-filter" placeholder="Filter your collection…"
+             autocomplete="off" aria-label="Filter collections">
+    </form>
+  {% endif %}
+
+  {% if not games %}
+    <p class="empty-state">Nothing recognized as installed yet.</p>
+  {% endif %}
+
+  <div class="results-grid" id="collections-grid">
+    {% for g in games %}
+      <div class="result-card" data-name="{{ g.name|lower }}">
+        {% if g.icon_url %}
+          <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+        {% else %}
+          <div class="result-card__icon result-card__icon--placeholder">🎮</div>
+        {% endif %}
+        <div class="result-card__body">
+          <div class="result-card__title">{{ g.name }}</div>
+          {% if g.short_description %}
+            <p class="result-card__desc">{{ g.short_description }}</p>
+          {% endif %}
+        </div>
+        <div class="result-card__actions">
+          <span class="badge available">available</span>
+          {% if g.display_path %}
+            <details class="path-disclosure">
+              <summary>Where is it?</summary>
+              <code>{{ g.display_path }}</code>
+            </details>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  <p class="empty-state" id="collections-no-match" hidden>No games match your filter.</p>
+</div>
+<script src="{{ url_for('static', filename='js/collections_filter.js') }}"></script>
+{% endblock %}

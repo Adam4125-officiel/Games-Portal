@@ -192,3 +192,103 @@ and spells out that "batch" means the whole handoff, not the branch. The five
 existing rc.6-rc.10 releases and their branches were left as-is at the user's
 call - they still work as individual test builds - so this entry is the fix,
 not a cleanup log.
+
+## 2026-09-11 — Admin tools, "my requests," a games-folder scanner, DB backup/restore, and a session-security pass — the Discord/email/Seerr half deferred cross-repo
+
+A nine-item batch handed over in one session. Two items (Discord/email
+notifications, Seerr contact sync) were deliberately **not** built here after
+discussion mid-session: status-portal already owns the hard parts of "notify
+one specific person" (a real Discord bot with DM capability, the Seerr
+jellyfinUserId -> email/Discord-ID resolution), and duplicating that here
+would mean two divergent implementations of the same idea instead of one app
+delegating to the other. The agreed shape (two API keys, one per direction;
+two separate notify endpoints rather than a generic enqueue; an explicit
+`jellyfin_user_id` concept on `requests`) is captured in `ROADMAP.md`'s Ideas
+section, waiting on a joint session with both repos' agents live at once
+rather than a spec written from one side alone. A third item ("my requests"
+showing other Jellyfin account settings - join date, library access) was also
+narrowed mid-session: Jellyfin stays login/logout only in this app, nothing
+more, so the shipped page is a pure view over this app's own `requests` table.
+
+What shipped: admins can delete a request outright (not just change its
+status); visitors get a `/my-requests` page scoped strictly to their own
+data; a new games-folder scanner (`scanner.py`) recognizes installed games
+via an embedded `{steamapp-<id>}` tag or an admin-confirmed fuzzy match
+against Steam's own search backend, and the search/request flow now respects
+it (an "installed" badge instead of a Request button, duplicate requests for
+an installed game refused); admins can download/restore a database backup;
+admin and visitor sessions now expire after a configurable idle period
+instead of lasting the full 30-day cookie lifetime regardless of use; and the
+Jellyfin 12.0 fix from the previous entry was independently re-verified
+straight from `jellyfin/jellyfin`'s own `v12.0` source (not just its release
+notes) and proven against a real local server that actually enforces the
+disabled-legacy-auth rule, not just a mocked one.
+
+**The "random disconnects" bug report got an actual investigation, not an
+assumed cause.** Checked and ruled out: multi-process secret-key mismatch
+(this app runs one process, many threads, sharing module state - status-
+portal's documented version of this bug doesn't apply here), flash-message
+cookie bloat (every template that can show one calls
+`get_flashed_messages()`), CSRF token regeneration on login (session is
+never cleared at sign-in). Found a real, previously-invisible gap instead:
+`config._load_or_create_secret_key()` silently swallowed a failure to
+persist a freshly-generated key. If `instance/` were ever unwritable (a
+Docker volume permission mismatch, say), every future process start would
+silently generate a new ephemeral key and invalidate every session - which
+from the outside looks exactly like unexplained disconnects, especially
+since a crash-and-restart isn't something a user would necessarily connect
+to "why was I logged out." Now logs loudly instead of failing silently.
+
+**Two real bugs turned up during verification, not just in tests written
+against the code as built** - the same pattern the first-build entry above
+already established for this project:
+
+- **rapidfuzz's `fuzz.WRatio` is case-sensitive by default.** Hand-testing
+  the scanner's fuzzy matching against realistic folder names found "Elden
+  Ring" vs. Steam's own "ELDEN RING" scoring 30/100 - well under any sane
+  confidence threshold - because nothing was normalizing case before
+  scoring. The mocked unit tests never caught this; they happened not to
+  include a case difference. Fixed by passing `rapidfuzz.utils.default_process`
+  as the scoring processor; confirmed the new regression test
+  (`test_fuzzy_matching_ignores_case_differences`) actually catches it by
+  reverting the fix locally and watching the test fail before restoring it.
+- **The database restore feature's safety-snapshot directory was anchored to
+  a fixed path, not to `db.DB_PATH`.** `_db_safety_backup_dir()` (originally
+  a `DB_SAFETY_BACKUP_DIR` constant built from `config.APP_ROOT`) never
+  followed the test suite's `isolated_db` fixture, which only monkeypatches
+  `db.DB_PATH` - so every restore test was silently writing real timestamped
+  `.db` snapshots into this actual repo's `instance/db_backups/` directory
+  instead of staying inside the test's own `tmp_path` sandbox. Caught by
+  setting up a live smoke test in an isolated copy of the app and noticing
+  stray files show up in `git status` for the real checkout, not by anything
+  in the mocked suite. Harmless in that `instance/` is gitignored, but real
+  filesystem pollution outside test isolation nonetheless, and the identical
+  class of bug would leak real snapshots in a production deployment where
+  `db.DB_PATH` is ever relocated. Fixed by deriving the directory from
+  `db.DB_PATH` at call time instead.
+
+**What's verified, and how:** `pytest tests/` - 158 tests total, run after
+every individual fix, covering every item above (including a real local
+Flask stand-in server for the Jellyfin 12.0 proof, and full `tmp_path`
+folder-tree tests for the scanner's tag/fuzzy-match/prune/rename behavior).
+A full live smoke test against a real running dev server in an isolated copy
+of the app (so nothing touched this actual checkout's own `instance/`):
+admin first-run login, session-timeout settings save, the scanner's "Scan
+now" and "Confirm match" against real Steam search results (including the
+refusal path for a bogus AppID and the successful on-disk folder rename),
+the search page's "installed" badge and hidden Request button, a database
+backup download opened and verified as a real SQLite file, and the full
+visitor path (sign-in against a small local Jellyfin-shaped stand-in,
+search, request, "my requests" showing only that visitor's own request,
+admin seeing and deleting it). Two real curl gotchas from this file's own
+testing guidance were hit and corrected mid-session, not just cited in the
+abstract: a `-L`-followed POST redirect that re-sent a stale CSRF token
+looked exactly like a 400 failure, and a `-b`-without-`-c` cookie jar meant
+a flash message written server-side never made it back to the client.
+
+**Not verified:** a real Jellyfin 12.0 server (still none available in this
+environment - same gap the very first release shipped with), a real Docker
+Compose run with a real bind-mounted games folder, and a restore against a
+large, production-sized database (only small test databases were exercised).
+
+Released as `v1.1.0-rc.1`.

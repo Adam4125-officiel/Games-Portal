@@ -7,6 +7,7 @@
       <div class="topbar__brand">🎮 Games Portal</div>
       <div class="topbar__sub">Search Steam's catalog and request a game</div>
     </div>
+    <a class="btn secondary" href="{{ url_for('collections') }}">📚 Collections</a>
   </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -20,6 +21,35 @@
            autocomplete="off" autofocus maxlength="100" aria-label="Search Steam's catalog">
     <button type="submit" class="btn">Search</button>
   </form>
+
+  {% if recent %}
+    <h2 class="section-heading">Recently added</h2>
+    <div class="results-grid">
+      {% for g in recent %}
+        <div class="result-card">
+          {% if g.icon_url %}
+            <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+          {% else %}
+            <div class="result-card__icon result-card__icon--placeholder">🎮</div>
+          {% endif %}
+          <div class="result-card__body">
+            <div class="result-card__title">{{ g.name }}</div>
+            {% if g.short_description %}
+              <p class="result-card__desc">{{ g.short_description }}</p>
+            {% endif %}
+          </div>
+          {% if g.display_path %}
+            <div class="result-card__actions">
+              <details class="path-disclosure">
+                <summary>Where is it?</summary>
+                <code>{{ g.display_path }}</code>
+              </details>
+            </div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
 
   {% if search_error %}
     <div class="flash error">{{ search_error }}</div>
@@ -44,6 +74,12 @@
         <div class="result-card__actions">
           {% if r.existing_status %}
             <span class="badge {{ r.existing_status }}">{{ r.existing_status }}</span>
+            {% if r.display_path %}
+              <details class="path-disclosure">
+                <summary>Where is it?</summary>
+                <code>{{ r.display_path }}</code>
+              </details>
+            {% endif %}
           {% elif user %}
             <form method="POST" action="{{ url_for('submit_request') }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

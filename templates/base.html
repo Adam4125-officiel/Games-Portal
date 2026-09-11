@@ -16,6 +16,9 @@
       {% if user %}
         <span class="user-chip">
           <span class="user-chip__name">👤 {{ user.name }}</span>
+          {% if request.endpoint != 'my_requests' %}
+            <a class="user-chip__out" href="{{ url_for('my_requests') }}">My requests</a>
+          {% endif %}
           <a class="user-chip__out" href="{{ url_for('user_logout') }}">Sign out</a>
         </span>
       {% elif request.endpoint != 'user_login' %}

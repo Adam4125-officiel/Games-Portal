@@ -15,11 +15,19 @@ same server, same house style — separate repo).
   same Jellyfin your media server already runs) so a request is always attributable
   to someone; search itself needs no sign-in.
 - **Admin panel**: review requests, change their status (pending → approved →
-  downloading → done, or rejected), leave a note. Password-protected, same pattern
-  as status-portal's `/admin`.
-- **Auto-detection** *(not built yet — see `ROADMAP.md`)*: a background scan of a
-  configured games folder — one subfolder per installed game — will flag requests
-  that are already present, so they don't get asked for twice.
+  downloading → done, or rejected), leave a note, or delete a request outright.
+  Password-protected, same pattern as status-portal's `/admin`.
+- **My requests**: a signed-in visitor can see their own request history and
+  current statuses at `/my-requests` - scoped to their own data only.
+- **Auto-detection**: a background scan of one or more configured games folders
+  — one subfolder per installed game — recognizes what's already installed, so
+  it's never re-requested. Configured entirely from the admin UI. See
+  "Games-folder scanner" below.
+- **Collections** (`/collections`): a public, browsable, filterable list of
+  every game the scanner has recognized, pictures included - no sign-in
+  needed, same as search itself.
+- **Recently added**: the search page's landing view (no active search) shows
+  the most recently recognized games right under the search bar.
 
 ## Running it
 
@@ -41,6 +49,57 @@ docker compose up -d --build
 
 The admin password is set on first visit to `/admin`. Without `PORTAL_JELLYFIN_URL`
 set, search still works but sign-in (and therefore requesting) is disabled.
+
+## Jellyfin compatibility
+
+Visitor sign-in works against Jellyfin **10.6 through 12.0** (the newest release
+as of this writing). Jellyfin 12.0 disables legacy authorization by default,
+which stops it reading the old `X-Emby-Token`/`X-MediaBrowser-Token` headers and
+the lowercase `api_key` query parameter - this app has never relied on any of
+those. It authenticates over the plain `Authorization: MediaBrowser ...,
+Token="..."` header, which every Jellyfin version back to 10.6 has read first,
+unconditionally - verified directly against `jellyfin/jellyfin`'s own source at
+tag `v12.0` (`AuthorizationContext.cs`), not just its release notes. Proven with
+a real local stand-in server that enforces 12.0's rule, not just a mocked one -
+see `tests/test_jellyfin_12_compat.py`.
+
+## Games-folder scanner
+
+Configured entirely from **Folder Scanner** in the admin nav - no `.env`
+editing or restart needed, same idea as Sonarr/Radarr's library scan. Add one
+or more root folders (one subfolder per installed game each; one entry per
+disk if your library spans more than one - each is scanned independently, so
+one being unplugged never affects the others), a scan interval, and a
+fuzzy-match confidence threshold, all editable live. Matching, in order:
+
+1. **A tag already in the folder name.** This app tags a folder as
+   `{steamapp-<appid>}` anywhere in its name, e.g. `Half-Life 2 {steamapp-220}`
+   - curly braces because they're filesystem-safe on Windows/Linux/macOS, and
+   deliberately echoing Sonarr's own real `{tvdb-<id>}` convention. A tagged
+   folder is recognized instantly, no network call needed.
+2. **A fuzzy match against Steam's catalog** for anything untagged. Never
+   auto-accepted - a confident guess (default confidence 82) shows up on the
+   Folder Scanner page as "awaiting review" for the admin to confirm or
+   correct. Confirming it (whichever way it was found) renames the folder on
+   disk to add the tag, so the next scan recognizes it directly instead of
+   fuzzy-matching it again.
+
+Each configured folder also has an optional **label** and **client path**.
+The client path is what a *visitor* is told when they ask "where is it?" on
+Collections or the search page - not necessarily the server's own path. A
+server scanning `D:\Games` might be reachable to everyone else on the network
+as `\\HOMESERVER\Games` or a different mapped drive letter entirely; left
+blank, the server's own path is shown as a fallback.
+
+Once a game is recognized, the search page shows an "available" badge instead
+of a Request button (with a "Where is it?" disclosure revealing the
+client-facing path), a duplicate request for it is refused, and it shows up
+on `/collections` and in the "Recently added" strip on the search page.
+
+Under Docker, a folder still needs to be bind-mounted into the container
+first (see `docker-compose.yml`'s comments, including how to add more than
+one for multiple disks) - you then enter its *container-side* path into the
+admin UI, same as any other folder.
 
 ## Visual style
 

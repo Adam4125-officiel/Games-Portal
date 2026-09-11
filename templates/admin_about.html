@@ -116,6 +116,18 @@
       </div>
       <p class="field-hint">Turn this off to stop the portal making any periodic outbound call -
         "Check now" still works on demand.</p>
+      <div class="field">
+        <label for="admin_session_timeout_hours">Sign out admins after (hours idle)</label>
+        <input type="number" min="0" max="{{ max_session_timeout_hours }}" name="admin_session_timeout_hours"
+               id="admin_session_timeout_hours" value="{{ admin_session_timeout_hours }}">
+        <p class="field-hint">0 disables the idle timeout - the session then lasts until the
+          30-day cookie itself expires.</p>
+      </div>
+      <div class="field">
+        <label for="user_session_timeout_hours">Sign out visitors after (hours idle)</label>
+        <input type="number" min="0" max="{{ max_session_timeout_hours }}" name="user_session_timeout_hours"
+               id="user_session_timeout_hours" value="{{ user_session_timeout_hours }}">
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn">Save</button>
       </div>
@@ -176,6 +188,33 @@
   {% endif %}
 
   <div class="panel">
+    <h2>Database backup &amp; restore</h2>
+    <p class="dim">
+      This app's entire database - requests, admin settings, the scanner's cache - and
+      nothing else. Not to be confused with the rollback points above, which are
+      application <em>code</em>, not data; neither can restore the other.
+    </p>
+    <a class="btn secondary" href="{{ url_for('admin_backup_db') }}">Download a backup</a>
+
+    <h3 class="panel__subhead">Restore</h3>
+    <p class="dim">
+      Replaces every piece of data this app holds. Your current database is
+      snapshotted first (kept in <code>instance/db_backups/</code>, last
+      {{ keep_db_safety_backups }} kept) so a regretted restore is still
+      recoverable, but this is still the most destructive button in the admin
+      panel - confirm before you press it.
+    </p>
+    <form method="POST" action="{{ url_for('admin_restore_db') }}" enctype="multipart/form-data" id="restore-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="file" name="backup" accept=".db" required>
+      <button type="submit" class="btn danger"
+              data-confirm="Replace the live database with this backup? Your current database will be snapshotted first, but this cannot be undone from here.">
+        Restore
+      </button>
+    </form>
+  </div>
+
+  <div class="panel">
     <h2>This install</h2>
     <table class="info-table">
       <tr><th>Python</th><td>{{ python_version }}</td></tr>
@@ -194,5 +233,5 @@
     </table>
   </div>
 
-  <script src="{{ url_for('static', filename='js/admin_update.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>
 {% endblock %}

@@ -265,7 +265,31 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   -webkit-box-orient: vertical;
 }
 
-.result-card__actions { flex-shrink: 0; }
+.result-card__actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.section-heading {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  margin: 24px 0 12px;
+}
+
+/* A native <details> disclosure - no JS needed to show/hide it. Kept small
+   and unobtrusive since it sits inside a compact result card. */
+.path-disclosure { font-size: 0.78rem; }
+.path-disclosure summary { color: var(--text-dim); cursor: pointer; text-align: right; }
+.path-disclosure summary:hover { color: var(--text-primary); }
+.path-disclosure code {
+  display: block;
+  margin-top: 4px;
+  word-break: break-all;
+  color: var(--text-dim);
+}
 
 /* ---------- Status badges ---------- */
 .badge {
@@ -283,6 +307,7 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .badge.downloading { background: var(--maint-dim); color: var(--maint); }
 .badge.done { background: var(--ok-dim); color: var(--ok); }
 .badge.rejected { background: var(--crit-dim); color: var(--crit); }
+.badge.available { background: var(--ok-dim); color: var(--ok); }
 .badge.warn { background: var(--warn-dim); color: var(--warn); text-transform: none; }
 .badge.maint { background: var(--maint-dim); color: var(--maint); text-transform: none; }
 
@@ -314,6 +339,7 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 
 .field { margin-bottom: 14px; }
 .field input { width: 100%; }
+.field textarea { width: 100%; resize: vertical; font-family: var(--font-mono); }
 
 .form-actions { display: flex; gap: 10px; margin-top: 18px; }
 
@@ -432,6 +458,12 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   margin: 0 0 12px;
 }
 
+.panel__subhead {
+  font-family: var(--font-display);
+  font-size: 0.88rem;
+  margin: 18px 0 8px;
+}
+
 .dim { color: var(--text-dim); font-size: 0.85rem; }
 
 .info-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 10px; }
@@ -468,6 +500,8 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .request-row__form select { flex-shrink: 0; }
 .request-row__form input[type="text"] { flex: 1; min-width: 120px; }
 
+.request-row__delete { flex-shrink: 0; align-self: flex-start; }
+
 /* ---------- Errors ---------- */
 .error-shell {
   max-width: 480px;
@@ -479,6 +513,15 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {
+  /* .page-actions is fixed-positioned (top-right) so it can float over a wide
+     desktop layout without needing space reserved for it. On mobile that
+     stops being true: the admin nav below becomes a full-width wrapping bar
+     that occupies the same top strip, so the two visually collide (worse
+     once Jellyfin sign-in and the scanner nav entry are both on - a real
+     "ugly, unusable on mobile" report, not a hypothetical). Switched to a
+     normal flowing bar above everything else instead of floating over it.
+  */
+  .page-actions { position: static; justify-content: flex-end; padding: 14px 16px 0; }
   .admin-shell { flex-direction: column; }
   .admin-nav { width: 100%; position: static; flex-direction: row; flex-wrap: wrap; }
   .result-card { flex-wrap: wrap; }

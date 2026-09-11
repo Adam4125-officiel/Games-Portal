@@ -1,0 +1,173 @@
+{% extends "admin_base.html" %}
+{% block title %}Folder Scanner — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">Games folder scanner</div>
+      <div class="topbar__sub">Recognizing what's already installed, so it's never asked for twice</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Games folders</h2>
+    <p class="dim">
+      Each subfolder inside is treated as one installed game. Add one entry per disk if your
+      library is split across drives; each is scanned independently, so one being unplugged
+      never affects the others.
+    </p>
+    <p class="dim">
+      <strong>Client path</strong> is what a visitor is told on <a href="{{ url_for('collections') }}">Collections</a>
+      when they ask "where is it?" - not necessarily the same as the path below, which is this
+      server's own. A server-side <code>D:\Games</code> might be <code>\\HOMESERVER\Games</code>
+      or a different mapped drive letter for everyone else on the network. Left blank, the
+      server's own path is shown instead - correct, but possibly not what a visitor should type.
+    </p>
+
+    {% if folders %}
+      <div class="request-list">
+        {% for f in folders %}
+          <div class="request-row">
+            <div class="request-row__body">
+              <div class="request-row__title">
+                {{ f.label or f.path }}
+                <span class="badge {{ 'done' if f.exists else 'rejected' }}">{{ 'found' if f.exists else 'not found' }}</span>
+              </div>
+              <p class="request-row__meta">Server path: <code>{{ f.path }}</code></p>
+            </div>
+            <form class="request-row__form" method="POST"
+                  action="{{ url_for('admin_scanner_update_folder', folder_id=f.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="label" placeholder="Label (optional)" value="{{ f.label }}">
+              <input type="text" name="client_path" placeholder="Client path (optional)" value="{{ f.client_path }}">
+              <button type="submit" class="btn small">Save</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_scanner_delete_folder', folder_id=f.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn small danger"
+                      data-confirm="Remove &quot;{{ f.label or f.path }}&quot; from the scanner? Games already matched under it will stop being recognized as installed.">Remove</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty-state">No games folders configured yet - add at least one below.</p>
+    {% endif %}
+
+    <h3 class="panel__subhead">Add a folder</h3>
+    <form method="POST" action="{{ url_for('admin_scanner_add_folder') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="path">Server path</label>
+        <input type="text" name="path" id="path" placeholder="/mnt/games or D:\Games" required>
+      </div>
+      <div class="field">
+        <label for="new_label">Label (optional)</label>
+        <input type="text" name="label" id="new_label" placeholder="Main games drive">
+      </div>
+      <div class="field">
+        <label for="new_client_path">Client path (optional)</label>
+        <input type="text" name="client_path" id="new_client_path" placeholder="\\HOMESERVER\Games">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Add folder</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Scan settings</h2>
+    <form method="POST" action="{{ url_for('admin_scanner_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="scan_interval_minutes">Scan every (minutes)</label>
+        <input type="number" min="1" name="scan_interval_minutes" id="scan_interval_minutes"
+               value="{{ scan_interval_minutes }}">
+        <p class="field-hint">How often the background scan re-walks these folders. Takes effect on
+          the next cycle - no restart needed.</p>
+      </div>
+      <div class="field">
+        <label for="fuzzy_match_threshold">Fuzzy-match confidence (0-100)</label>
+        <input type="number" min="0" max="100" name="fuzzy_match_threshold" id="fuzzy_match_threshold"
+               value="{{ fuzzy_threshold }}">
+        <p class="field-hint">An untagged folder's best Steam match must clear this score to surface
+          as "awaiting review" below - never auto-applied regardless of this value.</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Scan</h2>
+    <p class="dim">
+      Tagged folders (<code>{steamapp-&lt;id&gt;}</code> anywhere in the name) are recognized
+      instantly. Everything else is fuzzy-matched against Steam's catalog - a confident guess
+      shows up below as "awaiting review," never auto-applied. Runs automatically in the
+      background too, on the interval above; this is just an on-demand pass.
+    </p>
+    <p class="dim"><strong>{{ matched_count }}</strong> folder(s) currently recognized.</p>
+    <form method="POST" action="{{ url_for('admin_scanner_scan') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary">Scan now</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Awaiting review ({{ pending|length }})</h2>
+    {% if not pending %}
+      <p class="empty-state">Nothing waiting on a confirmation.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for row in pending %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ row.folder_name }}</div>
+            {% if multiple_roots %}<p class="request-row__meta"><code>{{ row.root_path }}</code></p>{% endif %}
+            <p class="request-row__desc">
+              Possible match: <strong>{{ row.candidate_name }}</strong>
+              (AppID {{ row.candidate_appid }}, score {{ "%.0f"|format(row.candidate_score) }})
+            </p>
+          </div>
+          <form class="request-row__form" method="POST"
+                action="{{ url_for('admin_scanner_confirm', row_id=row.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="number" name="appid" value="{{ row.candidate_appid }}" min="1" required>
+            <button type="submit" class="btn small">Confirm match</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Unmatched ({{ unmatched|length }})</h2>
+    {% if not unmatched %}
+      <p class="empty-state">Nothing left unmatched.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for row in unmatched %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ row.folder_name }}</div>
+            {% if multiple_roots %}<p class="request-row__meta"><code>{{ row.root_path }}</code></p>{% endif %}
+            <p class="request-row__desc">No confident Steam match - enter the AppID by hand if you know it.</p>
+          </div>
+          <form class="request-row__form" method="POST"
+                action="{{ url_for('admin_scanner_confirm', row_id=row.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="number" name="appid" placeholder="Steam AppID" min="1" required>
+            <button type="submit" class="btn small">Confirm match</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

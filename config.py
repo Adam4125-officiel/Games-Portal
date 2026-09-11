@@ -3,12 +3,16 @@ config.py — All configuration in one place, read from environment variables
 (or a local .env file via python-dotenv). Nothing else in this app should read
 os.environ directly - add new settings here instead.
 """
+import logging
 import os
 import secrets
+import time
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_logger = logging.getLogger(__name__)
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -42,26 +46,75 @@ VERSION_DISPLAY = VERSION + ("+dev" if IS_GIT_CHECKOUT else "")
 # visitors alike) every time the app restarts.
 SECRET_KEY_FILE = os.path.join(APP_ROOT, "instance", "secret_key")
 
+# How many times (and how long between) to retry a failed read of an
+# *existing* secret_key file before concluding it's unreadable and generating
+# a new one. Guards against a transient lock - a cloud-synced folder (OneDrive,
+# Dropbox) or antivirus real-time scanning briefly holding the file open right
+# after it's written is a real, reported cause on Windows (a Desktop folder is
+# a common default OneDrive sync target) - rather than treating one momentary
+# failure as "the key is gone" and silently signing everyone out.
+SECRET_KEY_READ_RETRY_ATTEMPTS = 3
+SECRET_KEY_READ_RETRY_DELAY_SECONDS = 0.3
+
+
+def _read_secret_key_with_retry():
+    """The persisted key, or None if it genuinely doesn't exist yet (the
+    normal first-run case - fails fast, no point retrying that) or couldn't
+    be read even after retrying past a transient failure."""
+    if not os.path.isfile(SECRET_KEY_FILE):
+        return None
+    last_error = None
+    for attempt in range(SECRET_KEY_READ_RETRY_ATTEMPTS):
+        try:
+            with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
+                stored = f.read().strip()
+            if stored:
+                return stored
+            break  # exists but empty - not a lock, retrying won't help
+        except OSError as e:
+            last_error = e
+            if attempt + 1 < SECRET_KEY_READ_RETRY_ATTEMPTS:
+                time.sleep(SECRET_KEY_READ_RETRY_DELAY_SECONDS)
+    if last_error:
+        _logger.warning(
+            "Could not read the persisted session secret key at %s after %d attempt(s) (%s) - "
+            "generating a new one for this process, which will sign everyone out. If this keeps "
+            "happening: something is locking that file - a cloud-synced folder (OneDrive, "
+            "Dropbox) or antivirus real-time scanning are common causes on Windows. Moving this "
+            "app's folder outside any synced location usually fixes it.",
+            SECRET_KEY_FILE, SECRET_KEY_READ_RETRY_ATTEMPTS, last_error)
+    return None
+
 
 def _load_or_create_secret_key():
     env_key = os.environ.get("PORTAL_SECRET_KEY", "").strip()
     if env_key:
         return env_key
-    try:
-        with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
-            stored = f.read().strip()
-        if stored:
-            return stored
-    except OSError:
-        pass
+    stored = _read_secret_key_with_retry()
+    if stored:
+        return stored
     key = secrets.token_hex(32)
     try:
         os.makedirs(os.path.dirname(SECRET_KEY_FILE), exist_ok=True)
         fd = os.open(SECRET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(key)
-    except OSError:
-        pass
+    except OSError as e:
+        # Must never be silent: a key that fails to persist still works fine for
+        # *this* process, so nothing looks wrong right now - but the next process
+        # start (a crash, a Docker restart, anything) generates yet another
+        # ephemeral key the same way, silently signing out every admin and
+        # visitor session every single time. From the outside that presents as
+        # unexplained "random disconnects," not as an obvious startup failure -
+        # exactly the class of bug this log line exists to surface immediately
+        # instead of leaving someone to rediscover it session by session.
+        _logger.error(
+            "Could not persist a new session secret key to %s (%s). Using a "
+            "one-off key for THIS PROCESS ONLY - every admin and visitor "
+            "session will be invalidated the next time this process restarts, "
+            "and again every time after that until this becomes writable. "
+            "Check the ownership/permissions of %s.",
+            SECRET_KEY_FILE, e, os.path.dirname(SECRET_KEY_FILE))
     return key
 
 
@@ -145,3 +198,27 @@ UPDATE_CHECK_INTERVAL_SECONDS = int(os.environ.get("PORTAL_UPDATE_CHECK_INTERVAL
 # nothing. Changing this needs filesystem access to the host plus a restart.
 # Defaults to enabled; set it to false to require SSH access for every update.
 ENABLE_INAPP_UPDATE = os.environ.get("PORTAL_ENABLE_INAPP_UPDATE", "true").lower() != "false"
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner (see scanner.py)
+# ---------------------------------------------------------------------------
+# Deliberately NOT here: which folder(s) to scan, the scan interval, and the
+# fuzzy-match threshold are all DB settings edited live from /admin/scanner,
+# not env vars. Earlier versions of this app had them here as
+# PORTAL_GAMES_FOLDER etc. - moved on request, since a filesystem path list is
+# exactly the kind of thing that's tedious to maintain by hand-editing .env
+# and restarting every time a disk is added or removed. See scanner.py's
+# games_folders()/set_games_folders() and friends.
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Blank (the default) means "let the entry point decide" - app.py (the dev
+# server) defaults to INFO, serve_waitress.py (production) defaults to
+# WARNING, since a production log shouldn't be as chatty as a dev session's
+# by default. Set explicitly to override either one, e.g. INFO in production
+# while troubleshooting something. Invalid values are ignored (fall back to
+# the entry point's own default) rather than crashing startup over a typo.
+_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+_raw_log_level = os.environ.get("PORTAL_LOG_LEVEL", "").strip().upper()
+LOG_LEVEL = _raw_log_level if _raw_log_level in _VALID_LOG_LEVELS else ""

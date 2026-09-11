@@ -59,7 +59,15 @@
           <input type="text" name="admin_note" placeholder="Note (optional)" value="{{ r.admin_note }}" maxlength="500">
           <button type="submit" class="btn small">Update</button>
         </form>
+        <form class="request-row__delete" method="POST"
+              action="{{ url_for('admin_delete_request', request_id=r.id, status=status_filter) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn small danger"
+                  data-confirm="Delete the request for &quot;{{ r.name }}&quot;? This cannot be undone.">Delete</button>
+        </form>
       </div>
     {% endfor %}
   </div>
+
+  <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>
 {% endblock %}

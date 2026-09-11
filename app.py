@@ -7,22 +7,30 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import (Flask, abort, after_this_request, flash, redirect, render_template, request,
+                    send_file, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
 import db
 import jellyfin_auth
+import scanner
 import steam
 import updater
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Deliberately NOT configured here (no logging.basicConfig() at import time) -
+# this module is imported by both app.py's own __main__ block (dev) and
+# serve_waitress.py (production, via `from app import app`), and the two want
+# different default verbosity. Each entry point configures logging itself,
+# before doing anything else, in its own __main__ block.
 _logger = logging.getLogger(__name__)
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
@@ -96,6 +104,92 @@ def _inject_globals():
     return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled()}
 
 
+# ---------------------------------------------------------------------------
+# Session idle timeout - admin and visitor sessions each expire after a period
+# of inactivity rather than staying valid for the full 30-day cookie lifetime
+# regardless of use. Both hooks are registered *before* _check_csrf below on
+# purpose: an admin POST arriving on an expired session must redirect to
+# sign-in, not fail the CSRF check with a bare 400 - the token being checked
+# lives in the very session being cleared here, so the other order turns
+# "your session expired" into an unexplained error page.
+# ---------------------------------------------------------------------------
+DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS = 12
+DEFAULT_USER_SESSION_TIMEOUT_HOURS = 168  # a week
+MAX_SESSION_TIMEOUT_HOURS = config.SESSION_COOKIE_MAX_AGE_DAYS * 24
+
+# The last-seen stamp is only rewritten once per this many seconds, not on
+# literally every request - that would re-sign and re-send the session cookie
+# on every single hit for no benefit finer than any timeout worth configuring.
+SESSION_TOUCH_INTERVAL_SECONDS = 60
+
+
+def _admin_session_timeout_seconds():
+    """0 (or a blank/invalid setting) means no idle timeout - the session then
+    lasts until the cookie's own Max-Age (config.SESSION_COOKIE_MAX_AGE_DAYS)
+    runs out, which is still a real, uniform expiry rather than "forever"."""
+    raw = db.get_setting("admin_session_timeout_hours", str(DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS))
+    hours = int(raw) if raw.isdigit() else DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS
+    if hours <= 0:
+        return None
+    return min(hours, MAX_SESSION_TIMEOUT_HOURS) * 3600
+
+
+def _user_session_timeout_seconds():
+    raw = db.get_setting("user_session_timeout_hours", str(DEFAULT_USER_SESSION_TIMEOUT_HOURS))
+    hours = int(raw) if raw.isdigit() else DEFAULT_USER_SESSION_TIMEOUT_HOURS
+    if hours <= 0:
+        return None
+    return min(hours, MAX_SESSION_TIMEOUT_HOURS) * 3600
+
+
+@app.before_request
+def _enforce_admin_session_timeout():
+    if not session.get("logged_in"):
+        return
+    session.permanent = True
+    timeout = _admin_session_timeout_seconds()
+    now = time.time()
+    last_seen = session.get("last_seen")
+    if timeout is not None and last_seen is not None and now - last_seen > timeout:
+        session.clear()
+        flash("Your session expired after a period of inactivity. Please sign in again.", "error")
+        return redirect(url_for("admin_login", next=request.path))
+    if last_seen is None or now - last_seen > SESSION_TOUCH_INTERVAL_SECONDS:
+        session["last_seen"] = now
+
+
+@app.before_request
+def _enforce_user_session_timeout():
+    """The visitor-session equivalent of the hook above, kept fully separate:
+    reads and clears only its own session keys, never touches `logged_in`."""
+    if not session.get("portal_user"):
+        return
+    session.permanent = True
+    timeout = _user_session_timeout_seconds()
+    now = time.time()
+    last_seen = session.get("portal_user_last_seen")
+    if timeout is not None and last_seen is not None and now - last_seen > timeout:
+        _end_user_session()
+        return
+    if last_seen is None or now - last_seen > SESSION_TOUCH_INTERVAL_SECONDS:
+        session["portal_user_last_seen"] = now
+
+
+# A real portal.db backup is far larger than the 1 MB app-wide upload cap
+# (MAX_CONTENT_LENGTH above, sized for ordinary form posts). Raised for this
+# one route only rather than app-wide - registered before _check_csrf for the
+# same reason: that hook reads request.form, which parses the body under
+# whatever limit is active at that point, and would otherwise reject a good
+# upload before the view that actually raises the limit ever runs.
+DB_RESTORE_MAX_BYTES = 64 * 1024 * 1024
+
+
+@app.before_request
+def _allow_large_upload_for_restore():
+    if request.method == "POST" and request.path == "/admin/about/restore-db":
+        request.max_content_length = DB_RESTORE_MAX_BYTES
+
+
 @app.before_request
 def _check_csrf():
     if app.testing or request.method != "POST":
@@ -115,6 +209,7 @@ def is_first_run():
 def _start_admin_session():
     session.permanent = True
     session["logged_in"] = True
+    session["last_seen"] = time.time()
 
 
 def login_required(f):
@@ -156,10 +251,12 @@ def _register_login_success():
 def _start_user_session(user):
     session.permanent = True
     session["portal_user"] = {"id": user["id"], "name": user["name"]}
+    session["portal_user_last_seen"] = time.time()
 
 
 def _end_user_session():
     session.pop("portal_user", None)
+    session.pop("portal_user_last_seen", None)
 
 
 def current_user():
@@ -206,8 +303,26 @@ def _safe_next_url(raw):
 
 
 # ---------------------------------------------------------------------------
-# Public: search + request
+# Public: search + request + collections
 # ---------------------------------------------------------------------------
+def _matched_games_by_appid():
+    """steam_appid -> matched installed_games row, with a computed
+    display_path (see scanner.display_path_for_game) attached - shared by the
+    search page's "available" badge and /collections, so a game's client-
+    facing path is computed the same way in both places. A local SQLite read
+    (db.list_scanned_folders), not network I/O, so calling it inline in a
+    request handler is the same class of call db.active_request_appids()
+    already is here."""
+    result = {}
+    for row in db.list_scanned_folders(status="matched"):
+        appid = row["steam_appid"]
+        if appid is None:
+            continue
+        row["display_path"] = scanner.display_path_for_game(row["root_path"], row["folder_name"])
+        result[appid] = row
+    return result
+
+
 def _search_rate_limited():
     now = time.time()
     window_start = session.get("search_window_start", 0)
@@ -237,10 +352,23 @@ def index():
                 search_error = "Steam search is unavailable right now. Please try again shortly."
 
     existing = db.active_request_appids([r["appid"] for r in results])
+    matched_by_appid = _matched_games_by_appid()
     for r in results:
-        r["existing_status"] = existing.get(r["appid"])
+        matched = matched_by_appid.get(r["appid"])
+        r["existing_status"] = existing.get(r["appid"]) or ("available" if matched else None)
+        r["display_path"] = matched["display_path"] if matched else None
 
-    return render_template("index.html", query=query, results=results, search_error=search_error)
+    # Only on the plain landing view, not alongside actual search results -
+    # a "here's what's already here" teaser belongs on arrival, not repeated
+    # underneath every Steam search.
+    recent = [] if query else db.recently_matched_games(limit=8)
+    for g in recent:
+        if not g["name"]:
+            g["name"] = scanner.strip_tag(g["folder_name"])
+        g["display_path"] = scanner.display_path_for_game(g["root_path"], g["folder_name"])
+
+    return render_template("index.html", query=query, results=results, search_error=search_error,
+                            recent=recent)
 
 
 @app.route("/request", methods=["POST"])
@@ -257,6 +385,10 @@ def submit_request():
         flash("That game has already been requested.", "error")
         return redirect(next_url)
 
+    if appid in scanner.matched_appids():
+        flash("That game is already installed.", "error")
+        return redirect(next_url)
+
     summary = steam.fetch_app_summary(appid)
     if summary is None:
         flash("Could not look up that game on Steam - please try again.", "error")
@@ -267,6 +399,30 @@ def submit_request():
                        summary["short_description"], user["id"], user["name"])
     flash(f'Requested "{summary["name"]}".', "success")
     return redirect(next_url)
+
+
+@app.route("/collections")
+def collections():
+    """Every game the scanner currently recognizes as installed - public,
+    read-only, no sign-in needed, same as search itself (only *requesting*
+    needs a Jellyfin sign-in). A local DB read, not network I/O - see
+    _matched_games_by_appid()'s own docstring."""
+    games = list(_matched_games_by_appid().values())
+    for g in games:
+        if not g["name"]:
+            g["name"] = scanner.strip_tag(g["folder_name"])
+    games.sort(key=lambda g: g["name"].lower())
+    return render_template("collections.html", games=games)
+
+
+@app.route("/my-requests")
+@user_login_required
+def my_requests():
+    """A visitor's own request history - strictly scoped to their own Jellyfin
+    id (see current_user()), never anyone else's. No Jellyfin account data of
+    any kind here - Jellyfin stays login/logout only in this app."""
+    requests_list = db.list_requests(requested_by_id=current_user()["id"])
+    return render_template("my_requests.html", requests=requests_list)
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +519,7 @@ def admin_login():
 @app.route("/admin/logout")
 def admin_logout():
     session.pop("logged_in", None)
+    session.pop("last_seen", None)
     return redirect(url_for("index"))
 
 
@@ -390,6 +547,128 @@ def admin_update_request(request_id):
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
 
+@app.route("/admin/requests/<int:request_id>/delete", methods=["POST"])
+@login_required
+def admin_delete_request(request_id):
+    if db.get_request(request_id) is None:
+        abort(404)
+    db.delete_request(request_id)
+    flash("Request deleted.", "success")
+    return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner (see scanner.py) - always reachable from the admin nav,
+# even with nothing configured yet, so there's somewhere to actually add a
+# folder from. Only scan_once()/confirm_match() care whether it's configured,
+# and both already degrade gracefully (a no-op scan, a "not configured" error)
+# rather than needing a route-level gate.
+# ---------------------------------------------------------------------------
+@app.route("/admin/scanner")
+@login_required
+def admin_scanner():
+    folders = db.list_games_folders()
+    for f in folders:
+        f["exists"] = scanner.folder_exists(f["path"])
+    return render_template(
+        "admin_scanner.html", active="scanner",
+        pending=db.list_scanned_folders(status="pending_review"),
+        unmatched=db.list_scanned_folders(status="unmatched"),
+        matched_count=len(db.list_scanned_folders(status="matched")),
+        folders=folders,
+        multiple_roots=len(folders) > 1,
+        scan_interval_minutes=db.get_setting(
+            scanner.SCAN_INTERVAL_MINUTES_SETTING, str(scanner.DEFAULT_SCAN_INTERVAL_MINUTES)),
+        fuzzy_threshold=scanner.fuzzy_match_threshold(),
+    )
+
+
+@app.route("/admin/scanner/settings", methods=["POST"])
+@login_required
+def admin_scanner_settings():
+    interval_raw = request.form.get("scan_interval_minutes", "")
+    if interval_raw.isdigit() and int(interval_raw) > 0:
+        scanner.set_scan_interval_minutes(int(interval_raw))
+
+    threshold_raw = request.form.get("fuzzy_match_threshold", "")
+    if threshold_raw.isdigit():
+        scanner.set_fuzzy_match_threshold(int(threshold_raw))
+
+    flash("Scanner settings saved.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/add", methods=["POST"])
+@login_required
+def admin_scanner_add_folder():
+    path = request.form.get("path", "").strip()
+    label = request.form.get("label", "").strip()
+    client_path = request.form.get("client_path", "").strip()
+    if not path:
+        flash("Enter a folder path.", "error")
+        return redirect(url_for("admin_scanner"))
+    folder_id = db.add_games_folder(path, label, client_path)
+    if folder_id is None:
+        flash(f'"{path}" is already configured.', "error")
+    else:
+        flash(f'Added "{path}".', "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/<int:folder_id>/update", methods=["POST"])
+@login_required
+def admin_scanner_update_folder(folder_id):
+    if db.get_games_folder(folder_id) is None:
+        abort(404)
+    label = request.form.get("label", "").strip()
+    client_path = request.form.get("client_path", "").strip()
+    db.update_games_folder(folder_id, label, client_path)
+    flash("Folder updated.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/<int:folder_id>/delete", methods=["POST"])
+@login_required
+def admin_scanner_delete_folder(folder_id):
+    if db.get_games_folder(folder_id) is None:
+        abort(404)
+    db.delete_games_folder(folder_id)
+    flash("Folder removed. Its previously-scanned entries will be cleared on the next scan.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/scan", methods=["POST"])
+@login_required
+def admin_scanner_scan():
+    if not scanner.is_enabled():
+        flash("Add at least one games folder below before scanning.", "error")
+        return redirect(url_for("admin_scanner"))
+    result = scanner.scan_once()
+    summary = (f"Scanned {result['scanned']} folder(s): {result['matched']} matched, "
+               f"{result['pending_review']} awaiting review, {result['unmatched']} unmatched.")
+    if result.get("errors"):
+        flash(f"{summary} Could not read: {'; '.join(result['errors'])}", "error")
+    else:
+        flash(summary, "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/<int:row_id>/confirm", methods=["POST"])
+@login_required
+def admin_scanner_confirm(row_id):
+    raw_appid = request.form.get("appid", "")
+    if not raw_appid.isdigit():
+        flash("Enter a numeric Steam AppID.", "error")
+        return redirect(url_for("admin_scanner"))
+    try:
+        result = scanner.confirm_match(row_id, int(raw_appid))
+    except scanner.ScannerError as e:
+        flash(str(e), "error")
+    else:
+        flash(f'Matched "{result["folder_name"]}" to {result["name"]} (AppID {result["appid"]}).', "success")
+    return redirect(url_for("admin_scanner"))
+
+
 # ---------------------------------------------------------------------------
 # About / self-update (see updater.py for everything that actually happens)
 # ---------------------------------------------------------------------------
@@ -414,6 +693,12 @@ def admin_about():
         platform_name=platform.platform(),
         app_root=config.APP_ROOT,
         db_path=db.DB_PATH,
+        admin_session_timeout_hours=db.get_setting(
+            "admin_session_timeout_hours", str(DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS)),
+        user_session_timeout_hours=db.get_setting(
+            "user_session_timeout_hours", str(DEFAULT_USER_SESSION_TIMEOUT_HOURS)),
+        max_session_timeout_hours=MAX_SESSION_TIMEOUT_HOURS,
+        keep_db_safety_backups=KEEP_DB_SAFETY_BACKUPS,
     )
 
 
@@ -444,7 +729,154 @@ def admin_about_settings():
         # actively misleading next to the newly-selected one.
         updater.clear_update_cache()
     updater.set_update_check_enabled(bool(request.form.get("update_check_enabled")))
+
+    admin_timeout_raw = request.form.get("admin_session_timeout_hours", "")
+    if admin_timeout_raw.isdigit():
+        db.set_setting("admin_session_timeout_hours",
+                        str(min(int(admin_timeout_raw), MAX_SESSION_TIMEOUT_HOURS)))
+    user_timeout_raw = request.form.get("user_session_timeout_hours", "")
+    if user_timeout_raw.isdigit():
+        db.set_setting("user_session_timeout_hours",
+                        str(min(int(user_timeout_raw), MAX_SESSION_TIMEOUT_HOURS)))
+
     flash("Preferences saved.", "success")
+    return redirect(url_for("admin_about"))
+
+
+# ---------------------------------------------------------------------------
+# Database backup/restore (see db.py for the actual mechanics). Not to be
+# confused with updater.py's own backups above/below this on the About page -
+# those are application *code*, taken to undo a bad update; these are
+# *data*, this app's entire database and nothing else. Neither can restore
+# the other.
+# ---------------------------------------------------------------------------
+KEEP_DB_SAFETY_BACKUPS = 5
+
+
+def _backup_timestamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _db_safety_backup_dir():
+    """Derived from db.DB_PATH rather than a fixed config.APP_ROOT-based
+    constant, so tests that point db.DB_PATH at a tmp_path sandbox (see
+    conftest.py's isolated_db fixture) never write real snapshot files into
+    this repo's actual instance/ directory - caught by hand-testing a real
+    restore against a running dev server, not by the mocked test suite,
+    which never noticed the snapshots landing in the wrong place."""
+    return os.path.join(os.path.dirname(db.DB_PATH), "db_backups")
+
+
+@app.route("/admin/about/backup-db")
+@login_required
+def admin_backup_db():
+    """Downloads a fresh snapshot of the live database. Non-destructive - no
+    confirm() needed, unlike the restore route below."""
+    fd, staged = tempfile.mkstemp(prefix="games-portal-backup-", suffix=".db",
+                                   dir=os.path.dirname(db.DB_PATH))
+    os.close(fd)
+    db.backup_to_file(staged)
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return response
+
+    return send_file(staged, as_attachment=True, mimetype="application/x-sqlite3",
+                      download_name=f"games-portal-{_backup_timestamp()}.db")
+
+
+def _db_safety_snapshot():
+    """A consistent snapshot of the database as it is *right now*, taken
+    before a restore replaces it, so a regretted restore is still
+    recoverable. Returns the snapshot's path."""
+    backup_dir = _db_safety_backup_dir()
+    os.makedirs(backup_dir, exist_ok=True)
+    path = os.path.join(backup_dir, f"portal-before-restore-{_backup_timestamp()}.db")
+    db.backup_to_file(path)
+    return path
+
+
+def _prune_db_safety_backups():
+    backup_dir = _db_safety_backup_dir()
+    try:
+        names = sorted(n for n in os.listdir(backup_dir) if n.endswith(".db"))
+    except OSError:
+        return
+    for stale in (names[:-KEEP_DB_SAFETY_BACKUPS] if len(names) > KEEP_DB_SAFETY_BACKUPS else []):
+        try:
+            os.remove(os.path.join(backup_dir, stale))
+        except OSError:
+            _logger.warning("Could not prune old database snapshot %s", stale)
+
+
+@app.route("/admin/about/restore-db", methods=["POST"])
+@login_required
+def admin_restore_db():
+    """Replaces the live database with an uploaded backup, then restarts.
+
+    Gated the same way every other destructive admin action in this app is
+    (login + CSRF + a client-side confirm()) - no 2FA to step up to here,
+    same tier as admin_update below. Order matters and isn't rearrangeable:
+    stage the upload (live database untouched) -> validate it -> snapshot
+    the *current* database (so a regretted restore stays recoverable) ->
+    replace -> restart, since every existing connection to the old file's
+    contents needs a clean slate."""
+    upload = request.files.get("backup")
+    if not upload or not upload.filename:
+        flash("Choose a backup file to restore.", "error")
+        return redirect(url_for("admin_about"))
+
+    os.makedirs(os.path.dirname(db.DB_PATH), exist_ok=True)
+    fd, staged = tempfile.mkstemp(prefix="restore-", suffix=".db", dir=os.path.dirname(db.DB_PATH))
+    os.close(fd)
+    snapshot = None
+    try:
+        try:
+            upload.save(staged)
+        except OSError as e:
+            flash(f"Could not read the uploaded file: {e}", "error")
+            return redirect(url_for("admin_about"))
+
+        error = db.validate_backup_file(staged)
+        if error:
+            flash(f"Restore refused: {error} Your database has not been touched.", "error")
+            return redirect(url_for("admin_about"))
+
+        try:
+            snapshot = _db_safety_snapshot()
+        except Exception as e:
+            _logger.exception("Could not snapshot the database before restoring")
+            flash(f"Restore aborted: couldn't back up your current database first ({e}). "
+                  "Nothing has been changed.", "error")
+            return redirect(url_for("admin_about"))
+
+        try:
+            db.restore_from_file(staged)
+        except Exception as e:
+            _logger.exception("Database restore failed")
+            flash(f"Restore failed: {e}. Your previous database was saved to "
+                  f"{snapshot} before the attempt.", "error")
+            return redirect(url_for("admin_about"))
+        # Renamed onto the live path by restore_from_file - not ours to clean up any more.
+        staged = None
+        _prune_db_safety_backups()
+    finally:
+        if staged and os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+
+    _logger.warning("Database restored from an uploaded backup; previous database saved to %s",
+                     os.path.basename(snapshot))
+    flash(f"Database restored. Your previous database was saved as "
+          f"{os.path.basename(snapshot)} in instance/db_backups/. Restarting now - this page "
+          f"will be briefly unreachable.", "success")
+    _restart_process()
     return redirect(url_for("admin_about"))
 
 
@@ -454,7 +886,7 @@ def admin_update():
     """Installs the latest release and restarts the app into it.
 
     Gated the same way every other state-changing admin route in this app is -
-    login + CSRF, plus a client-side confirm() (see static/js/admin_update.js).
+    login + CSRF, plus a client-side confirm() (see static/js/admin_confirm.js).
     Unlike status-portal's equivalent button, there's no step-up 2FA here: this
     app has no 2FA system yet. config.ENABLE_INAPP_UPDATE is the other gate,
     lives in an env var rather than a DB setting precisely so an attacker who
@@ -550,12 +982,14 @@ def _restart_process():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=config.LOG_LEVEL or "INFO", format=LOG_FORMAT)
     db.init_db()
     # If the previous shutdown was an in-app update restarting into a new
     # version, this is where that gets confirmed (or reported as not having
     # taken effect).
     updater.check_pending_marker()
     updater.start_background_checker()
+    scanner.start_background_scanner()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
     # debug=False deliberately: the Werkzeug reloader's WERKZEUG_SERVER_FD
     # handoff and this app's own os.execv()-based self-restart (see
