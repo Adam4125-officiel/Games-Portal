@@ -639,12 +639,21 @@ def admin_about_settings():
 # *data*, this app's entire database and nothing else. Neither can restore
 # the other.
 # ---------------------------------------------------------------------------
-DB_SAFETY_BACKUP_DIR = os.path.join(config.APP_ROOT, "instance", "db_backups")
 KEEP_DB_SAFETY_BACKUPS = 5
 
 
 def _backup_timestamp():
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _db_safety_backup_dir():
+    """Derived from db.DB_PATH rather than a fixed config.APP_ROOT-based
+    constant, so tests that point db.DB_PATH at a tmp_path sandbox (see
+    conftest.py's isolated_db fixture) never write real snapshot files into
+    this repo's actual instance/ directory - caught by hand-testing a real
+    restore against a running dev server, not by the mocked test suite,
+    which never noticed the snapshots landing in the wrong place."""
+    return os.path.join(os.path.dirname(db.DB_PATH), "db_backups")
 
 
 @app.route("/admin/about/backup-db")
@@ -673,20 +682,22 @@ def _db_safety_snapshot():
     """A consistent snapshot of the database as it is *right now*, taken
     before a restore replaces it, so a regretted restore is still
     recoverable. Returns the snapshot's path."""
-    os.makedirs(DB_SAFETY_BACKUP_DIR, exist_ok=True)
-    path = os.path.join(DB_SAFETY_BACKUP_DIR, f"portal-before-restore-{_backup_timestamp()}.db")
+    backup_dir = _db_safety_backup_dir()
+    os.makedirs(backup_dir, exist_ok=True)
+    path = os.path.join(backup_dir, f"portal-before-restore-{_backup_timestamp()}.db")
     db.backup_to_file(path)
     return path
 
 
 def _prune_db_safety_backups():
+    backup_dir = _db_safety_backup_dir()
     try:
-        names = sorted(n for n in os.listdir(DB_SAFETY_BACKUP_DIR) if n.endswith(".db"))
+        names = sorted(n for n in os.listdir(backup_dir) if n.endswith(".db"))
     except OSError:
         return
     for stale in (names[:-KEEP_DB_SAFETY_BACKUPS] if len(names) > KEEP_DB_SAFETY_BACKUPS else []):
         try:
-            os.remove(os.path.join(DB_SAFETY_BACKUP_DIR, stale))
+            os.remove(os.path.join(backup_dir, stale))
         except OSError:
             _logger.warning("Could not prune old database snapshot %s", stale)
 

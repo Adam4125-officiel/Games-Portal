@@ -574,3 +574,22 @@ def test_admin_restore_db_replaces_the_data_and_restarts(admin_client, monkeypat
     rows = db.list_requests()
     assert len(rows) == 1
     assert rows[0]["name"] == "Half-Life 2"
+
+
+def test_db_safety_snapshots_stay_inside_the_isolated_test_sandbox(isolated_db):
+    """Regression guard: the safety-snapshot directory must follow db.DB_PATH
+    (which conftest.py's isolated_db fixture points at a tmp_path sandbox for
+    every test), not a fixed config.APP_ROOT-based path - otherwise every
+    restore test silently writes real snapshot files into this actual repo's
+    instance/db_backups/ instead of staying contained. Found by hand-testing
+    a real restore against a running dev server and then noticing stray
+    files in git status, not by any assertion in the mocked test suite."""
+    import os
+    import config as config_module
+    import db
+    real_instance_dir = os.path.join(config_module.APP_ROOT, "instance")
+
+    backup_dir = app_module._db_safety_backup_dir()
+
+    assert backup_dir.startswith(os.path.dirname(db.DB_PATH))
+    assert not backup_dir.startswith(real_instance_dir)
