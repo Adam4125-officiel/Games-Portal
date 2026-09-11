@@ -292,3 +292,22 @@ Compose run with a real bind-mounted games folder, and a restore against a
 large, production-sized database (only small test databases were exercised).
 
 Released as `v1.1.0-rc.1`.
+
+## 2026-09-11 — v1.1.0-rc.1 through rc.5 confirmed stable on a real deployment; merged
+
+The batch above went through five rc's of real usage, not just the mocked
+suite, each fixing something only a live install surfaced: a schema crash on
+an install carrying an earlier scanner attempt's table shape (rc.2), waitress
+inheriting the dev server's chatty logging (rc.3 - production logs were as
+noisy as a dev session by default), a genuine investigation into reported
+"random disconnects" that couldn't be reproduced here but got a targeted
+hardening fix anyway (rc.3), the admin nav visually colliding with the
+sign-in bar on mobile (rc.3), and then two rounds of real feature feedback
+once the scanner was actually tried for the first time: moving its config
+out of `.env` into the admin UI with real multi-folder support (rc.4), and a
+public Collections page plus per-folder client-facing paths (rc.5).
+
+Confirmed stable from real end-to-end testing against a real deployment -
+the bar this repo's branching rule actually requires, not just passing
+tests. Merged to `main` with a regular merge commit (`dda59a6`), branch
+deleted both sides. Released as `v1.1.0`.
