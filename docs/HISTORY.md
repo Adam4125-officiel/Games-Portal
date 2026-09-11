@@ -311,3 +311,67 @@ Confirmed stable from real end-to-end testing against a real deployment -
 the bar this repo's branching rule actually requires, not just passing
 tests. Merged to `main` with a regular merge commit (`dda59a6`), branch
 deleted both sides. Released as `v1.1.0`.
+
+## 2026-09-11 — Deleted-game tracking, blacklist, request limits, tag-aware badges, and Jellyfin-style rails
+
+One batch, several independent asks handed over together: deleted games are
+now tracked instead of silently vanishing, an admin-maintained blacklist
+blocks specific AppIDs from ever being requested, an optional global/per-user
+request-rate limit (mirroring Seerr/Jellyseerr's shape) caps how many games a
+visitor can request per day/week/month, the "available" badge names the
+matched disk's label when one is set, the "Recently added" count is now
+admin-configurable, scroll position survives a refresh or a form Save, the
+visitor sign-in bar no longer renders under `/admin`, and both "Recently
+added" and `/collections` became horizontally-scrolling rails - the latter
+grouped into Jellyfin-style rows by Steam genre, newly cached per matched
+game (`installed_games.genres`).
+
+**Real hand-testing against a live dev server - a real scanned games folder
+with real Steam AppIDs, a real folder deletion, real Steam blacklist/genre
+data - turned up three bugs a template-only read-through and the mocked test
+suite both missed:**
+
+- `index.html`'s "Recently added" rail never actually included
+  `rail_scroll.js` - `collections.html` had the script tag, `index.html`
+  simply didn't. The arrow buttons rendered and looked normal but did
+  nothing at all when clicked, and (since the visibility-toggle logic never
+  ran either) never hid themselves on a row short enough not to need them.
+  Only visible by actually clicking the arrow in a real browser and checking
+  whether the rail scrolled - a static render diff would never have caught a
+  missing `<script>` tag whose absence changes no visible markup at all.
+- The rail's first cut reused `.result-card`'s icon-left/text-right layout
+  at rail width (~280px) - titles wrapped mid-word, descriptions truncated to
+  a handful of characters. Redesigned as a poster-style `.rail-card` (icon on
+  top at Steam's own header-image aspect ratio, text below) once real Steam
+  artwork in a real screenshot made the squeeze obvious in a way reading the
+  CSS never would have.
+- `scroll_restore.js`'s own sessionStorage-based restore was silently getting
+  overridden by the browser's *own* native scroll restoration firing after
+  it on a plain reload - passed on a Save-and-redirect (a fresh navigation,
+  which the browser doesn't auto-restore) but failed the more basic F5 case
+  that was the entire point of the feature. Root-caused by measuring
+  `window.scrollY` before/after a real Playwright reload rather than trusting
+  the code path in isolation; fixed with `history.scrollRestoration =
+  "manual"` so the script is the sole authority either way.
+
+**What's verified, and how:** `pytest tests/` - 234 tests, covering every
+item above including deleted-row transitions (and reappearance back to
+matched), genre-caching and its one-time backfill for rows matched before
+the column existed, blacklist enforcement and admin CRUD, and request-limit
+enforcement (global, per-user override, rejected requests excluded from the
+count). A full live smoke test in an isolated copy of the app, against real
+Steam data: a real games folder scanned with real tagged subfolders (Half-
+Life 2, Portal 2, Stardew Valley and others), a real server-side folder
+deletion confirmed to flip that row to "deleted" and immediately show a
+"Sign in to request" button again on search instead of "Available", a real
+AppID (Elden Ring) blacklisted through the admin UI and confirmed refused
+with its reason shown, a real global weekly limit and a real per-user
+monthly override both saved and reflected in the admin UI, and Playwright
+screenshots at 1280px and 375px in both themes for the search page, admin
+scanner/blacklist/limits pages, and collections' genre rows.
+
+**Not verified:** a real Jellyfin server (still none available in this
+environment), a real Docker Compose run, and a production-sized database
+under any of this batch's new tables.
+
+Released as `v1.2.0-rc.1`.
