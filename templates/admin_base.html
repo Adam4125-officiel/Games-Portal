@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="wrap">
+  <div class="admin-shell">
+    <nav class="admin-nav">
+      <div class="admin-nav__brand">⚙ Admin</div>
+      <a href="{{ url_for('admin_requests') }}" class="{{ 'active' if active == 'requests' }}">Requests</a>
+      <a href="{{ url_for('admin_about') }}" class="{{ 'active' if active == 'about' }}">About</a>
+      <a href="{{ url_for('admin_logout') }}" class="admin-nav__logout">Sign out</a>
+    </nav>
+
+    <div class="admin-main">
+      {% block admin_body %}{% endblock %}
+    </div>
+  </div>
+</div>
+{% endblock %}

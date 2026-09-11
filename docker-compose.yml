@@ -5,7 +5,7 @@ services:
     # can't disagree: the app binds PORTAL_PORT inside the container, and
     # HOST_PORT is what that gets published as on the host.
     ports:
-      - "${HOST_PORT:-5000}:${PORTAL_PORT:-5000}"
+      - "${HOST_PORT:-5001}:${PORTAL_PORT:-5001}"
     # Every PORTAL_* variable config.py reads is listed here. Anything missing
     # from this list is silently invisible to the app when it runs under
     # Docker, however faithfully it's been set in .env - compose only
@@ -13,7 +13,7 @@ services:
     # into the container. If you add a new setting to config.py, add it here too.
     environment:
       - PORTAL_SECRET_KEY=${PORTAL_SECRET_KEY:-}
-      - PORTAL_PORT=${PORTAL_PORT:-5000}
+      - PORTAL_PORT=${PORTAL_PORT:-5001}
       - PORTAL_WAITRESS_THREADS=${PORTAL_WAITRESS_THREADS:-8}
       - PORTAL_BEHIND_PROXY=${PORTAL_BEHIND_PROXY:-false}
       - PORTAL_FORCE_HTTPS_COOKIES=${PORTAL_FORCE_HTTPS_COOKIES:-false}

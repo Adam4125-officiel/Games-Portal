@@ -127,6 +127,14 @@ a { color: var(--brand); }
 
 .btn.small { padding: 6px 12px; font-size: 0.82rem; }
 
+.btn.danger { background: var(--crit); }
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
 input[type="text"],
 input[type="search"],
 input[type="password"],
@@ -275,6 +283,8 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .badge.downloading { background: var(--maint-dim); color: var(--maint); }
 .badge.done { background: var(--ok-dim); color: var(--ok); }
 .badge.rejected { background: var(--crit-dim); color: var(--crit); }
+.badge.warn { background: var(--warn-dim); color: var(--warn); text-transform: none; }
+.badge.maint { background: var(--maint-dim); color: var(--maint); text-transform: none; }
 
 /* ---------- Login ---------- */
 .login-shell {
@@ -404,6 +414,55 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   flex-wrap: wrap;
   width: 100%;
   max-width: 340px;
+}
+
+/* ---------- About page ---------- */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  max-width: 640px;
+  margin-bottom: 16px;
+}
+
+.panel h2 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  margin: 0 0 12px;
+}
+
+.dim { color: var(--text-dim); font-size: 0.85rem; }
+
+.info-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 10px; }
+.info-table th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 5px 12px 5px 0; vertical-align: top; white-space: nowrap; }
+.info-table td { padding: 5px 0; word-break: break-word; }
+
+.field-check { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.field-check label { margin: 0; color: var(--text-primary); font-size: 0.88rem; }
+
+.field-hint { color: var(--text-faint); font-size: 0.78rem; margin: 4px 0 0; }
+
+.release-notes {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.release-notes summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.release-notes__body {
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin: 8px 0;
 }
 
 .request-row__form select { flex-shrink: 0; }

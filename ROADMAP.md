@@ -21,6 +21,17 @@ works.
   Don't ship pure exact-string matching as the only mode — pick (a), (b), or both.
   Waits for the folder scanner build session — see `scanner.py` (not written yet).
 
+## Pending user action
+
+- **Make this repo public on GitHub.** Decided (not still open) — the self-update
+  system (`updater.py`/`update.py`) needs it, since it calls GitHub's releases API
+  unauthenticated, which 404s against a private repo (see `docs/HISTORY.md`,
+  2026-09-10). This session's own token can't flip repo visibility; needs doing by
+  hand at Settings → General → Danger Zone → Change repository visibility. Once
+  done, the update-check/download path still needs one real live run against
+  actual GitHub releases to confirm the whole thing end-to-end — delete this
+  line once both are done.
+
 ## Ideas (unranked)
 
 - Show a small "already installed" badge directly on a search result if the

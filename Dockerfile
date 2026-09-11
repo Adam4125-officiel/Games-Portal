@@ -9,6 +9,6 @@ COPY . .
 RUN mkdir -p instance && useradd -m -u 1000 portal && chown -R portal:portal /app
 USER portal
 
-EXPOSE 5000
+EXPOSE 5001
 
 CMD ["python", "serve_waitress.py"]

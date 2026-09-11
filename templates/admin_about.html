@@ -1,0 +1,198 @@
+{% extends "admin_base.html" %}
+{% block title %}About — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">About</div>
+      <div class="topbar__sub">Version, updates, and this install</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Version</h2>
+    <table class="info-table">
+      <tr>
+        <th>Running</th>
+        <td><strong>{{ version_display }}</strong>{% if is_git_checkout %}
+          <span class="badge maint">git checkout</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <th>Channel</th>
+        <td>{{ channel }}</td>
+      </tr>
+      <tr>
+        <th>Latest available</th>
+        <td>
+          {% if not update_status %}
+            <span class="dim">
+              {% if check_enabled %}Not checked yet - the background checker runs every
+                ~{{ check_interval_hours }}h, or press "Check now".
+              {% else %}Automatic checking is off - press "Check now".{% endif %}
+            </span>
+          {% elif not update_status.ok %}
+            <span class="dim">Couldn't check - {{ update_status.error }}</span>
+          {% else %}
+            <strong>{{ update_status.latest }}</strong>
+            {% if update_status.prerelease %}<span class="badge warn">prerelease</span>{% endif %}
+            <a href="{{ update_status.latest_url }}" target="_blank" rel="noopener">release notes ↗</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% if update_status and update_status.checked_at %}
+      <tr>
+        <th>Last checked</th>
+        <td>{{ update_status.checked_at[:16].replace('T', ' ') }} UTC</td>
+      </tr>
+      {% endif %}
+    </table>
+
+    {% if update_status and update_status.ok %}
+      {% if update_status.update_available %}
+        <p class="flash success">An update is available: {{ update_status.current }} → {{ update_status.latest }}.</p>
+      {% elif update_status.ahead %}
+        <p class="dim">You're running {{ update_status.current }}, which is newer than the latest
+          {{ update_status.channel }} release. Nothing to install.</p>
+      {% else %}
+        <p class="dim">Up to date.</p>
+      {% endif %}
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('admin_about_check') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary">Check now</button>
+    </form>
+  </div>
+
+  {% if update_status and update_status.ok and update_status.release_notes %}
+  <div class="panel">
+    <h2>What's in the update</h2>
+    <p class="dim">
+      Everything published on the <strong>{{ channel }}</strong> channel since
+      {{ update_status.current }}{% if update_status.release_notes|length > 1 %} -
+      {{ update_status.release_notes|length }} releases, newest first{% endif %}. Taking the
+      update installs the newest of these; the ones in between are what you skipped past.
+    </p>
+    {% for r in update_status.release_notes %}
+      <details class="release-notes" {{ 'open' if loop.first }}>
+        <summary>
+          <strong>{{ r.name or r.version }}</strong>
+          {% if r.prerelease %}<span class="badge warn">prerelease</span>{% endif %}
+          {% if r.published_at %}<span class="dim">{{ r.published_at[:10] }}</span>{% endif %}
+        </summary>
+        <div class="release-notes__body">{{ r.body }}</div>
+        <a href="{{ r.html_url }}" target="_blank" rel="noopener">Read on GitHub ↗</a>
+      </details>
+    {% endfor %}
+    {% if update_status.release_notes_omitted %}
+      <p class="field-hint">…and {{ update_status.release_notes_omitted }} older release(s) not shown.
+        <a href="{{ releases_url }}" target="_blank" rel="noopener">See them all ↗</a></p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="panel">
+    <h2>Update preferences</h2>
+    <form method="POST" action="{{ url_for('admin_about_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="update_channel">Channel</label>
+        <select name="update_channel" id="update_channel">
+          <option value="stable" {{ 'selected' if channel == 'stable' }}>Stable - final releases only (recommended)</option>
+          <option value="unstable" {{ 'selected' if channel == 'unstable' }}>Unstable - also offers -rc prereleases</option>
+        </select>
+        <p class="field-hint">Prereleases (<code>-rc.N</code>) are cut for testing before being confirmed
+          stable - pick unstable only if you're happy to be the one finding the problems.</p>
+      </div>
+      <div class="field-check">
+        <input type="checkbox" name="update_check_enabled" id="update_check_enabled" {{ 'checked' if check_enabled }}>
+        <label for="update_check_enabled">Check GitHub for new releases automatically</label>
+      </div>
+      <p class="field-hint">Turn this off to stop the portal making any periodic outbound call -
+        "Check now" still works on demand.</p>
+      <div class="form-actions">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Install an update</h2>
+    {% if is_git_checkout %}
+      <p class="dim">Disabled: this is a git checkout, not an installed release. Updating would
+        overwrite tracked files and clobber uncommitted work - use <code>git pull</code> instead.</p>
+    {% elif not inapp_update_enabled %}
+      <p class="dim">Disabled by <code>PORTAL_ENABLE_INAPP_UPDATE=false</code>. Update over SSH
+        instead: <code>python update.py apply</code>.</p>
+    {% else %}
+      <p class="dim">
+        Downloads and verifies the latest <strong>{{ channel }}</strong> release, backs up every
+        file it replaces, installs it, then restarts the portal. Your database
+        (<code>instance/</code>) and <code>.env</code> are never touched. This takes a moment and
+        briefly takes the portal offline for everyone.
+      </p>
+      <p class="dim">
+        If the portal doesn't come back afterwards, undo it from a shell on the server with
+        <code>python update.py rollback</code> - nothing inside a process that failed to start can
+        undo its own update.
+      </p>
+      <form method="POST" action="{{ url_for('admin_update') }}" id="update-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn danger" id="update-trigger"
+                {{ 'disabled' if not (update_status and update_status.ok and update_status.update_available) }}
+                data-confirm="Update this portal to {{ update_status.latest if update_status else '' }} and restart it now?">
+          Update now{% if update_status and update_status.ok and update_status.update_available %}
+            → {{ update_status.latest }}{% endif %}
+        </button>
+      </form>
+      {% if not (update_status and update_status.ok and update_status.update_available) %}
+        <p class="field-hint">Enabled once a check has found a newer release.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if backups %}
+  <div class="panel">
+    <h2>Rollback points</h2>
+    <p class="dim">
+      Each update backs up the files it replaces, under <code>instance/update_backups/</code>.
+      These hold code, not data - rolling one back undoes an update and leaves your requests
+      exactly as they are. Restore one from a shell:
+      <code>python update.py rollback --to &lt;name&gt;</code>. Deliberately not a button here -
+      the case it exists for is a portal that won't start.
+    </p>
+    <table class="info-table">
+      {% for b in backups %}
+      <tr><th><code>{{ b.name }}</code></th><td>{{ b.from_version }} → {{ b.to_version }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="panel">
+    <h2>This install</h2>
+    <table class="info-table">
+      <tr><th>Python</th><td>{{ python_version }}</td></tr>
+      <tr><th>Platform</th><td>{{ platform_name }}</td></tr>
+      <tr><th>App folder</th><td><code>{{ app_root }}</code></td></tr>
+      <tr><th>Database</th><td><code>{{ db_path }}</code></td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Project</h2>
+    <table class="info-table">
+      <tr><th>Repository</th><td><a href="{{ repo_url }}" target="_blank" rel="noopener">{{ repo_url }} ↗</a></td></tr>
+      <tr><th>Releases</th><td><a href="{{ releases_url }}" target="_blank" rel="noopener">Release notes ↗</a></td></tr>
+      <tr><th>License</th><td>GNU AGPL v3 - see <code>LICENSE</code> in the app folder</td></tr>
+    </table>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/admin_update.js') }}"></script>
+{% endblock %}
