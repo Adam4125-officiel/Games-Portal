@@ -468,6 +468,8 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .request-row__form select { flex-shrink: 0; }
 .request-row__form input[type="text"] { flex: 1; min-width: 120px; }
 
+.request-row__delete { flex-shrink: 0; align-self: flex-start; }
+
 /* ---------- Errors ---------- */
 .error-shell {
   max-width: 480px;

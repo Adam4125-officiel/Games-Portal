@@ -465,6 +465,16 @@ def admin_update_request(request_id):
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
 
+@app.route("/admin/requests/<int:request_id>/delete", methods=["POST"])
+@login_required
+def admin_delete_request(request_id):
+    if db.get_request(request_id) is None:
+        abort(404)
+    db.delete_request(request_id)
+    flash("Request deleted.", "success")
+    return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
 # ---------------------------------------------------------------------------
 # About / self-update (see updater.py for everything that actually happens)
 # ---------------------------------------------------------------------------
@@ -544,7 +554,7 @@ def admin_update():
     """Installs the latest release and restarts the app into it.
 
     Gated the same way every other state-changing admin route in this app is -
-    login + CSRF, plus a client-side confirm() (see static/js/admin_update.js).
+    login + CSRF, plus a client-side confirm() (see static/js/admin_confirm.js).
     Unlike status-portal's equivalent button, there's no step-up 2FA here: this
     app has no 2FA system yet. config.ENABLE_INAPP_UPDATE is the other gate,
     lives in an env var rather than a DB setting precisely so an attacker who

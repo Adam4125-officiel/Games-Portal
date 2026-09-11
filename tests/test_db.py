@@ -42,6 +42,21 @@ def test_update_request_status_rejects_unknown_status(isolated_db):
         db.update_request_status(rid, "not-a-real-status", "")
 
 
+def test_delete_request(isolated_db):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.delete_request(rid)
+    assert db.get_request(rid) is None
+    assert db.list_requests() == []
+
+
+def test_delete_request_is_a_no_op_for_an_unknown_id(isolated_db):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.delete_request(999999)  # must not raise
+    assert len(db.list_requests()) == 1
+
+
 def test_active_request_appids_excludes_rejected(isolated_db):
     import db
     rid1 = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")

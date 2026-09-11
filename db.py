@@ -151,3 +151,10 @@ def update_request_status(request_id, status, admin_note):
                  (status, admin_note, now_iso(), request_id))
     conn.commit()
     conn.close()
+
+
+def delete_request(request_id):
+    conn = get_db()
+    conn.execute("DELETE FROM requests WHERE id=?", (request_id,))
+    conn.commit()
+    conn.close()

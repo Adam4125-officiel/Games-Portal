@@ -154,6 +154,31 @@ def test_admin_update_rejects_unknown_status(admin_client):
     assert row["status"] == "pending"
 
 
+def test_admin_can_delete_a_request(admin_client):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    resp = admin_client.post(f"/admin/requests/{rid}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"deleted" in resp.data.lower()
+    assert db.get_request(rid) is None
+
+
+def test_admin_delete_404s_for_an_unknown_request(admin_client):
+    resp = admin_client.post("/admin/requests/999999/delete")
+    assert resp.status_code == 404
+
+
+def test_admin_delete_requires_login(client):
+    import db
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    resp = client.post(f"/admin/requests/{rid}/delete")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+    assert db.get_request(rid) is not None
+
+
 def test_csrf_protection_rejects_missing_token(isolated_db):
     """Uses a client with TESTING left off, so the real CSRF check runs."""
     app_module.app.config["TESTING"] = False
