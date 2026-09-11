@@ -402,3 +402,19 @@ Two follow-ups from trying rc.1 for real, still the same batch/PR:
   `test_list_public_users_against_a_real_running_server`).
 
 `pytest tests/` - 249 tests. Released as `v1.2.0-rc.2`.
+
+### Confirmed stable; merged
+
+One more round after rc.2, from trying it for real: status-portal's grid-
+texture background and page footer ("Like this page? ⭐ Check it out on
+GitHub", adapted to this app's own name/version/repo - status-portal's own
+footer doesn't show a version yet, games-portal's now does), and a fix for
+the theme toggle - its icon was a hardcoded 🌙 that never changed regardless
+of which theme was active. Now CSS-driven off the same `[data-theme]`
+attribute theme.js already sets: ☀️ while dark, 🌙 while light, no JS timing
+involved. `pytest tests/` - 251 tests.
+
+Confirmed stable from real end-to-end testing against a real deployment -
+the bar this repo's branching rule actually requires, not just passing
+tests. Merged to `main` with a regular merge commit (`8f69e36`), branch
+deleted both sides. Released as `v1.2.0`.
