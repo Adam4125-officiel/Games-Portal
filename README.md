@@ -8,7 +8,8 @@ same server, same house style — separate repo).
 ## What it does
 
 - **Search**: a search bar hits Steam's public catalog and shows results (name,
-  icon, short description).
+  icon, short description). Every game shown anywhere in this app (search,
+  Recently added, Collections) links out to its own Steam store page.
 - **Request**: a small button next to each result sends a request — this app never
   downloads anything itself, it's purely the communication layer between whoever's
   asking and the admin. Requesting requires signing in with a Jellyfin account (the

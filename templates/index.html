@@ -47,6 +47,7 @@
                     <code>{{ g.display_path }}</code>
                   </details>
                 {% endif %}
+                <a class="steam-link" href="https://store.steampowered.com/app/{{ g.steam_appid }}" target="_blank" rel="noopener">Check out on Steam</a>
               </div>
             </div>
           </div>
@@ -111,6 +112,7 @@
           {% elif jellyfin_enabled %}
             <a class="btn small secondary" href="{{ url_for('user_login', next=request.full_path.rstrip('?')) }}">Sign in to request</a>
           {% endif %}
+          <a class="steam-link" href="https://store.steampowered.com/app/{{ r.appid }}" target="_blank" rel="noopener">Check out on Steam</a>
         </div>
       </div>
     {% endfor %}

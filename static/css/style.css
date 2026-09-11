@@ -291,6 +291,12 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   color: var(--text-dim);
 }
 
+/* A plain, muted text link to a game's Steam store page - same weight as
+   the "Where is it?" disclosure it usually sits next to, deliberately not a
+   full .btn so it doesn't compete visually with the card's primary action. */
+.steam-link { font-size: 0.78rem; color: var(--text-dim); text-decoration: none; }
+.steam-link:hover { color: var(--brand); text-decoration: underline; }
+
 /* ---------- Horizontal rails (Recently added, Collections genre rows) ----------
    Jellyfin-style: a horizontally-scrolling track with optional arrow
    buttons layered next to it, on top of plain touch/trackpad scrolling that

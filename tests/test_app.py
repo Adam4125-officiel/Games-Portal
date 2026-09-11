@@ -27,6 +27,20 @@ def test_search_shows_results(client, monkeypatch):
     assert b"A classic FPS." in resp.data
 
 
+def test_search_results_link_out_to_their_steam_store_page(client, monkeypatch):
+    import steam
+
+    def fake_search(term):
+        return [{"appid": 70, "name": "Half-Life", "icon_url": "", "short_description": ""}]
+
+    monkeypatch.setattr(steam, "search", fake_search)
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+
+    resp = client.get("/?q=half-life")
+    assert b'href="https://store.steampowered.com/app/70"' in resp.data
+    assert b"Check out on Steam" in resp.data
+
+
 def test_search_degrades_gracefully_on_steam_failure(client, monkeypatch):
     import steam
 
@@ -222,6 +236,16 @@ def test_collections_shows_matched_games_with_pictures(client):
     assert b'class="badge available literal"' in resp.data
 
 
+def test_collections_games_link_out_to_their_steam_store_page(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2")
+    resp = client.get("/collections")
+    assert b'href="https://store.steampowered.com/app/220"' in resp.data
+    assert b"Check out on Steam" in resp.data
+
+
 def test_collections_falls_back_to_the_folder_name_when_steam_details_are_missing(client):
     import db
     db.add_games_folder("/games")
@@ -270,6 +294,16 @@ def test_index_shows_recently_added_only_without_an_active_search(client, monkey
     monkeypatch.setattr(steam, "search", lambda term: [])
     resp = client.get("/?q=portal")
     assert b"Recently added" not in resp.data
+
+
+def test_recently_added_games_link_out_to_their_steam_store_page(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2", matched_at=db.now_iso())
+    resp = client.get("/")
+    assert b'href="https://store.steampowered.com/app/220"' in resp.data
+    assert b"Check out on Steam" in resp.data
 
 
 def test_index_respects_the_admin_configured_recently_added_count(client):
