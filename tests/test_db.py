@@ -245,3 +245,147 @@ def test_init_db_recreates_an_installed_games_table_that_predates_multi_folder_s
     assert db.list_scanned_folders() == []
     row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
     assert db.get_scanned_folder(row_id)["root_path"] == "/games"
+
+
+# ---------------------------------------------------------------------------
+# Deleted-game handling (see scanner.prune_scanned_folders and
+# app.py's admin_scanner_forget_deleted)
+# ---------------------------------------------------------------------------
+def test_prune_scanned_folders_marks_a_missing_matched_row_deleted(isolated_db):
+    import db
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
+    db.prune_scanned_folders(["/games"], {"/games"}, seen_pairs=set())
+    row = db.list_scanned_folders()[0]
+    assert row["status"] == "deleted"
+    assert row["steam_appid"] == 220
+    assert db.matched_appids() == set()
+
+
+def test_prune_scanned_folders_deletes_a_missing_unmatched_row_outright(isolated_db):
+    import db
+    db.upsert_scanned_folder("/games", "Some Unmatched Game", "unmatched")
+    db.prune_scanned_folders(["/games"], {"/games"}, seen_pairs=set())
+    assert db.list_scanned_folders() == []
+
+
+def test_prune_scanned_folders_leaves_an_already_deleted_row_alone(isolated_db):
+    import db
+    row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "deleted", steam_appid=220)
+    db.prune_scanned_folders(["/games"], {"/games"}, seen_pairs=set())
+    assert db.get_scanned_folder(row_id)["status"] == "deleted"
+
+
+def test_delete_scanned_folder_forgets_a_row(isolated_db):
+    import db
+    row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "deleted", steam_appid=220)
+    db.delete_scanned_folder(row_id)
+    assert db.get_scanned_folder(row_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Blacklist (see app.py's submit_request, the enforcement point)
+# ---------------------------------------------------------------------------
+def test_add_to_blacklist_and_lookup(isolated_db):
+    import db
+    entry_id = db.add_to_blacklist(220, "Half-Life 2", "Too big for the drive")
+    assert entry_id is not None
+    assert db.is_blacklisted(220) is True
+    assert db.is_blacklisted(999) is False
+    entry = db.get_blacklist_entry(220)
+    assert entry["name"] == "Half-Life 2"
+    assert entry["reason"] == "Too big for the drive"
+
+
+def test_add_to_blacklist_refuses_a_duplicate_appid(isolated_db):
+    import db
+    assert db.add_to_blacklist(220, "Half-Life 2") is not None
+    assert db.add_to_blacklist(220, "Half-Life 2") is None
+    assert len(db.list_blacklist()) == 1
+
+
+def test_blacklist_map_covers_only_requested_appids(isolated_db):
+    import db
+    db.add_to_blacklist(220, "Half-Life 2", "reason a")
+    db.add_to_blacklist(70, "Half-Life", "reason b")
+    assert db.blacklist_map([220, 999]) == {220: "reason a"}
+    assert db.blacklist_map([]) == {}
+
+
+def test_remove_from_blacklist(isolated_db):
+    import db
+    entry_id = db.add_to_blacklist(220, "Half-Life 2")
+    db.remove_from_blacklist(entry_id)
+    assert db.is_blacklisted(220) is False
+
+
+# ---------------------------------------------------------------------------
+# Request limits - global default + per-user override (see app.py's
+# _request_limit_error, the enforcement point)
+# ---------------------------------------------------------------------------
+def test_global_request_limit_defaults_to_unlimited(isolated_db):
+    import db
+    assert db.get_global_request_limit() == ("none", 0)
+
+
+def test_set_and_get_global_request_limit(isolated_db):
+    import db
+    db.set_global_request_limit("daily", 3)
+    assert db.get_global_request_limit() == ("daily", 3)
+
+
+def test_set_global_request_limit_rejects_an_unknown_period(isolated_db):
+    import db
+    import pytest
+    with pytest.raises(ValueError):
+        db.set_global_request_limit("hourly", 3)
+
+
+def test_user_request_limit_override_roundtrip(isolated_db):
+    import db
+    assert db.get_user_request_limit("jf-1") is None
+    db.set_user_request_limit("jf-1", "Alice", "weekly", 5)
+    assert db.get_user_request_limit("jf-1") == ("weekly", 5)
+
+    overrides = db.list_user_request_limits()
+    assert len(overrides) == 1
+    assert overrides[0]["requested_by_name"] == "Alice"
+
+
+def test_set_user_request_limit_upserts_rather_than_duplicates(isolated_db):
+    import db
+    db.set_user_request_limit("jf-1", "Alice", "weekly", 5)
+    db.set_user_request_limit("jf-1", "Alice", "monthly", 10)
+    assert db.get_user_request_limit("jf-1") == ("monthly", 10)
+    assert len(db.list_user_request_limits()) == 1
+
+
+def test_clear_user_request_limit(isolated_db):
+    import db
+    db.set_user_request_limit("jf-1", "Alice", "weekly", 5)
+    db.clear_user_request_limit("jf-1")
+    assert db.get_user_request_limit("jf-1") is None
+
+
+def test_distinct_requesters_deduplicates_by_id(isolated_db):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.create_request(220, "Half-Life 2", "", "", "jf-1", "Alice")
+    db.create_request(620, "Portal 2", "", "", "jf-2", "Bob")
+
+    requesters = db.distinct_requesters()
+    assert {r["requested_by_id"] for r in requesters} == {"jf-1", "jf-2"}
+
+
+def test_count_requests_since_excludes_rejected(isolated_db):
+    import db
+    id1 = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    db.create_request(220, "Half-Life 2", "", "", "jf-1", "Alice")
+    db.update_request_status(id1, "rejected", "")
+
+    assert db.count_requests_since("jf-1", "2000-01-01T00:00:00+00:00") == 1
+
+
+def test_count_requests_since_respects_the_window_start(isolated_db):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    assert db.count_requests_since("jf-1", "2999-01-01T00:00:00+00:00") == 0
