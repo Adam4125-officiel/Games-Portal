@@ -162,6 +162,14 @@ tests alone. If a login/session flow is involved: a curl cookie jar needs both
 with `-L` against a CSRF-protected route — the redirect gets re-POSTed with a
 stale token and looks exactly like a failure.
 
+**Any UI change gets a real Playwright look, at both form factors.** Not
+optional, not just for JS-dependent flows — any change touching a template or
+`static/css/style.css` gets screenshotted with Playwright before calling it
+done, at a desktop width (e.g. 1280px) *and* a phone width (e.g. 375px). This
+app's admin panel in particular has had real, user-reported mobile layout
+problems that CSS-reading-only review missed. Screenshot both themes if the
+change touches anything color-related.
+
 **Two companion files**, same split as status-portal:
 - `ROADMAP.md` — open ideas and unexplained symptoms only. A shipped idea's
   write-up gets deleted down to one index line once it's done — the code and

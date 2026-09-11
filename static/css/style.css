@@ -488,6 +488,15 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {
+  /* .page-actions is fixed-positioned (top-right) so it can float over a wide
+     desktop layout without needing space reserved for it. On mobile that
+     stops being true: the admin nav below becomes a full-width wrapping bar
+     that occupies the same top strip, so the two visually collide (worse
+     once Jellyfin sign-in and the scanner nav entry are both on - a real
+     "ugly, unusable on mobile" report, not a hypothetical). Switched to a
+     normal flowing bar above everything else instead of floating over it.
+  */
+  .page-actions { position: static; justify-content: flex-end; padding: 14px 16px 0; }
   .admin-shell { flex-direction: column; }
   .admin-nav { width: 100%; position: static; flex-direction: row; flex-wrap: wrap; }
   .result-card { flex-wrap: wrap; }
