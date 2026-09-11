@@ -1,0 +1,84 @@
+{% extends "admin_base.html" %}
+{% block title %}Request Limits — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">Request limits</div>
+      <div class="topbar__sub">How many games a visitor can request per day/week/month</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Global limit</h2>
+    <p class="dim">Applies to every visitor who doesn't have their own override below.
+      Unlimited by default. A rejected request never counts against a visitor's limit.</p>
+    <form method="POST" action="{{ url_for('admin_limits_global') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="global_period">Period</label>
+        <select name="period" id="global_period">
+          <option value="none" {{ 'selected' if global_period == 'none' }}>Unlimited</option>
+          <option value="daily" {{ 'selected' if global_period == 'daily' }}>Daily</option>
+          <option value="weekly" {{ 'selected' if global_period == 'weekly' }}>Weekly</option>
+          <option value="monthly" {{ 'selected' if global_period == 'monthly' }}>Monthly</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="global_count">Requests allowed per period</label>
+        <input type="number" name="count" id="global_count" min="1" value="{{ global_count or '' }}">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Per-user overrides</h2>
+    <p class="dim">
+      Only visitors who have made at least one request appear here - this portal doesn't sync a
+      Jellyfin user directory (see the project roadmap), so there's no way to look one up before
+      that. "Use global" clears their override and returns them to the limit above.
+    </p>
+    {% if not users %}
+      <p class="empty-state">No visitor has made a request yet.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for u in users %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ u.name }}</div>
+            <p class="request-row__meta">Last requested {{ u.last_requested_at }}</p>
+            <p class="request-row__meta">
+              {% if u.override_period %}
+                Override: {{ u.override_count }} per {{ u.override_period }}
+              {% else %}
+                Following the global limit
+              {% endif %}
+            </p>
+          </div>
+          <form class="request-row__form" method="POST"
+                action="{{ url_for('admin_limits_set_user', user_id=u.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="name" value="{{ u.name }}">
+            <select name="period">
+              <option value="none" {{ 'selected' if not u.override_period }}>Use global</option>
+              <option value="daily" {{ 'selected' if u.override_period == 'daily' }}>Daily</option>
+              <option value="weekly" {{ 'selected' if u.override_period == 'weekly' }}>Weekly</option>
+              <option value="monthly" {{ 'selected' if u.override_period == 'monthly' }}>Monthly</option>
+            </select>
+            <input type="number" name="count" min="1" placeholder="Count" value="{{ u.override_count }}">
+            <button type="submit" class="btn small">Save</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

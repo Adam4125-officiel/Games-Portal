@@ -291,6 +291,62 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   color: var(--text-dim);
 }
 
+/* ---------- Horizontal rails (Recently added, Collections genre rows) ----------
+   Jellyfin-style: a horizontally-scrolling track with optional arrow
+   buttons layered next to it, on top of plain touch/trackpad scrolling that
+   already works with zero JS. */
+.rail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail__track {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  padding: 2px 2px 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.rail__track::-webkit-scrollbar { display: none; }
+
+.rail__item {
+  flex: 0 0 280px;
+  min-width: 0;
+}
+
+.rail__item .result-card {
+  height: 100%;
+  flex-wrap: wrap;
+}
+
+.rail__arrow {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail__arrow:hover { background: var(--brand-dim); color: var(--brand); }
+
+.collection-row { margin-bottom: 28px; }
+
+.collection-row__heading {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  margin: 0 0 12px;
+}
+
 /* ---------- Status badges ---------- */
 .badge {
   display: inline-block;
@@ -308,8 +364,13 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .badge.done { background: var(--ok-dim); color: var(--ok); }
 .badge.rejected { background: var(--crit-dim); color: var(--crit); }
 .badge.available { background: var(--ok-dim); color: var(--ok); }
+.badge.blacklisted { background: var(--crit-dim); color: var(--crit); }
+.badge.deleted { background: var(--warn-dim); color: var(--warn); }
 .badge.warn { background: var(--warn-dim); color: var(--warn); text-transform: none; }
 .badge.maint { background: var(--maint-dim); color: var(--maint); text-transform: none; }
+/* Dynamic badge text ("Available on SSD") shouldn't be title-cased word by
+   word the way a plain status name is. */
+.badge.literal { text-transform: none; }
 
 /* ---------- Login ---------- */
 .login-shell {
@@ -528,4 +589,8 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   .result-card__actions { width: 100%; }
   .result-card__actions .btn { width: 100%; justify-content: center; }
   .request-row__form { max-width: none; }
+  /* Arrow buttons eat into already-tight width at phone size; touch/swipe
+     scrolling on the track still works without them. */
+  .rail__arrow { display: none; }
+  .rail__item { flex-basis: 220px; }
 }

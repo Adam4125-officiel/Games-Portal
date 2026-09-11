@@ -99,6 +99,12 @@
         <p class="field-hint">An untagged folder's best Steam match must clear this score to surface
           as "awaiting review" below - never auto-applied regardless of this value.</p>
       </div>
+      <div class="field">
+        <label for="recently_added_count">"Recently added" items shown</label>
+        <input type="number" min="1" max="50" name="recently_added_count" id="recently_added_count"
+               value="{{ recently_added_count }}">
+        <p class="field-hint">How many games the search page's "Recently added" strip shows.</p>
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn">Save</button>
       </div>
@@ -170,4 +176,37 @@
       {% endfor %}
     </div>
   </div>
+
+  <div class="panel">
+    <h2>Deleted ({{ deleted|length }})</h2>
+    <p class="dim">
+      A game whose folder was removed server-side, outside this app - kept here as a record rather
+      than silently forgotten. It's immediately re-requestable again (it no longer counts as
+      installed); if the same tagged folder reappears on disk, the next scan recognizes it and
+      moves it straight back to "matched" on its own.
+    </p>
+    {% if not deleted %}
+      <p class="empty-state">Nothing deleted.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for row in deleted %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ row.name or row.folder_name }}
+              <span class="badge deleted">deleted</span>
+            </div>
+            {% if multiple_roots %}<p class="request-row__meta"><code>{{ row.root_path }}</code></p>{% endif %}
+            <p class="request-row__meta">AppID {{ row.steam_appid }} · removed {{ row.updated_at }}</p>
+          </div>
+          <form method="POST" action="{{ url_for('admin_scanner_forget_deleted', row_id=row.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn small danger"
+                    data-confirm="Forget &quot;{{ row.name or row.folder_name }}&quot;? This only removes its record here - it's already re-requestable.">Forget</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>
 {% endblock %}

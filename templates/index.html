@@ -24,30 +24,36 @@
 
   {% if recent %}
     <h2 class="section-heading">Recently added</h2>
-    <div class="results-grid">
-      {% for g in recent %}
-        <div class="result-card">
-          {% if g.icon_url %}
-            <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
-          {% else %}
-            <div class="result-card__icon result-card__icon--placeholder">🎮</div>
-          {% endif %}
-          <div class="result-card__body">
-            <div class="result-card__title">{{ g.name }}</div>
-            {% if g.short_description %}
-              <p class="result-card__desc">{{ g.short_description }}</p>
-            {% endif %}
-          </div>
-          {% if g.display_path %}
-            <div class="result-card__actions">
-              <details class="path-disclosure">
-                <summary>Where is it?</summary>
-                <code>{{ g.display_path }}</code>
-              </details>
+    <div class="rail" data-rail>
+      <button type="button" class="rail__arrow" data-rail-prev aria-label="Scroll left">‹</button>
+      <div class="rail__track" data-rail-track>
+        {% for g in recent %}
+          <div class="rail__item">
+            <div class="result-card">
+              {% if g.icon_url %}
+                <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+              {% else %}
+                <div class="result-card__icon result-card__icon--placeholder">🎮</div>
+              {% endif %}
+              <div class="result-card__body">
+                <div class="result-card__title">{{ g.name }}</div>
+                {% if g.short_description %}
+                  <p class="result-card__desc">{{ g.short_description }}</p>
+                {% endif %}
+              </div>
+              {% if g.display_path %}
+                <div class="result-card__actions">
+                  <details class="path-disclosure">
+                    <summary>Where is it?</summary>
+                    <code>{{ g.display_path }}</code>
+                  </details>
+                </div>
+              {% endif %}
             </div>
-          {% endif %}
-        </div>
-      {% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="rail__arrow" data-rail-next aria-label="Scroll right">›</button>
     </div>
   {% endif %}
 
@@ -72,7 +78,23 @@
           {% endif %}
         </div>
         <div class="result-card__actions">
-          {% if r.existing_status %}
+          {% if r.existing_status == 'blacklisted' %}
+            <span class="badge blacklisted">blacklisted</span>
+            {% if r.blacklist_reason %}
+              <details class="path-disclosure">
+                <summary>Why?</summary>
+                <code>{{ r.blacklist_reason }}</code>
+              </details>
+            {% endif %}
+          {% elif r.existing_status == 'available' %}
+            <span class="badge available literal">{{ 'Available on ' + r.folder_label if r.folder_label else 'Available' }}</span>
+            {% if r.display_path %}
+              <details class="path-disclosure">
+                <summary>Where is it?</summary>
+                <code>{{ r.display_path }}</code>
+              </details>
+            {% endif %}
+          {% elif r.existing_status %}
             <span class="badge {{ r.existing_status }}">{{ r.existing_status }}</span>
             {% if r.display_path %}
               <details class="path-disclosure">
