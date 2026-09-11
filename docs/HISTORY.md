@@ -375,3 +375,30 @@ environment), a real Docker Compose run, and a production-sized database
 under any of this batch's new tables.
 
 Released as `v1.2.0-rc.1`.
+
+### rc.2 — real-user feedback on rc.1: every game links to Steam, and request-limit overrides list Jellyfin's own users
+
+Two follow-ups from trying rc.1 for real, still the same batch/PR:
+
+- Every game card (search results, Recently added, Collections) now links
+  out to its own Steam store page - `admin_requests.html`/`my_requests.html`
+  already had the equivalent for request rows; this filled in the three
+  places that didn't.
+- `/admin/limits`' per-user override list previously only showed visitors
+  who had already made a request, explicitly because this app has no
+  Jellyfin user directory sync (see `ROADMAP.md`). Since the actual need was
+  narrower - just listing candidates for an override, not a real directory -
+  it now also lists every account from Jellyfin's own unauthenticated `GET
+  /Users/Public` (the same list its login screen shows), live and uncached,
+  merged with past requesters as a fallback for an account since deleted or
+  hidden. **Verified against Jellyfin's own source before writing any code**
+  (`Jellyfin.Api/Controllers/UserController.cs` at tags `v10.7.0` and
+  `v12.0`, straight from GitHub): `GetPublicUsers()` has no `[Authorize]`
+  attribute in either, confirming this was never affected by 12.0's
+  legacy-auth-header change - there was no auth header on this endpoint to
+  begin with, a different situation from the sign-in flow's own 12.0 fix.
+  Also proven against a real running stand-in server, not just a mocked
+  response (`tests/test_jellyfin_12_compat.py`'s new
+  `test_list_public_users_against_a_real_running_server`).
+
+`pytest tests/` - 249 tests. Released as `v1.2.0-rc.2`.
