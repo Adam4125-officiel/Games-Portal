@@ -7,12 +7,14 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import (Flask, abort, after_this_request, flash, redirect, render_template, request,
+                    send_file, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -167,6 +169,21 @@ def _enforce_user_session_timeout():
         return
     if last_seen is None or now - last_seen > SESSION_TOUCH_INTERVAL_SECONDS:
         session["portal_user_last_seen"] = now
+
+
+# A real portal.db backup is far larger than the 1 MB app-wide upload cap
+# (MAX_CONTENT_LENGTH above, sized for ordinary form posts). Raised for this
+# one route only rather than app-wide - registered before _check_csrf for the
+# same reason: that hook reads request.form, which parses the body under
+# whatever limit is active at that point, and would otherwise reject a good
+# upload before the view that actually raises the limit ever runs.
+DB_RESTORE_MAX_BYTES = 64 * 1024 * 1024
+
+
+@app.before_request
+def _allow_large_upload_for_restore():
+    if request.method == "POST" and request.path == "/admin/about/restore-db":
+        request.max_content_length = DB_RESTORE_MAX_BYTES
 
 
 @app.before_request
@@ -570,6 +587,7 @@ def admin_about():
         user_session_timeout_hours=db.get_setting(
             "user_session_timeout_hours", str(DEFAULT_USER_SESSION_TIMEOUT_HOURS)),
         max_session_timeout_hours=MAX_SESSION_TIMEOUT_HOURS,
+        keep_db_safety_backups=KEEP_DB_SAFETY_BACKUPS,
     )
 
 
@@ -611,6 +629,132 @@ def admin_about_settings():
                         str(min(int(user_timeout_raw), MAX_SESSION_TIMEOUT_HOURS)))
 
     flash("Preferences saved.", "success")
+    return redirect(url_for("admin_about"))
+
+
+# ---------------------------------------------------------------------------
+# Database backup/restore (see db.py for the actual mechanics). Not to be
+# confused with updater.py's own backups above/below this on the About page -
+# those are application *code*, taken to undo a bad update; these are
+# *data*, this app's entire database and nothing else. Neither can restore
+# the other.
+# ---------------------------------------------------------------------------
+DB_SAFETY_BACKUP_DIR = os.path.join(config.APP_ROOT, "instance", "db_backups")
+KEEP_DB_SAFETY_BACKUPS = 5
+
+
+def _backup_timestamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+@app.route("/admin/about/backup-db")
+@login_required
+def admin_backup_db():
+    """Downloads a fresh snapshot of the live database. Non-destructive - no
+    confirm() needed, unlike the restore route below."""
+    fd, staged = tempfile.mkstemp(prefix="games-portal-backup-", suffix=".db",
+                                   dir=os.path.dirname(db.DB_PATH))
+    os.close(fd)
+    db.backup_to_file(staged)
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return response
+
+    return send_file(staged, as_attachment=True, mimetype="application/x-sqlite3",
+                      download_name=f"games-portal-{_backup_timestamp()}.db")
+
+
+def _db_safety_snapshot():
+    """A consistent snapshot of the database as it is *right now*, taken
+    before a restore replaces it, so a regretted restore is still
+    recoverable. Returns the snapshot's path."""
+    os.makedirs(DB_SAFETY_BACKUP_DIR, exist_ok=True)
+    path = os.path.join(DB_SAFETY_BACKUP_DIR, f"portal-before-restore-{_backup_timestamp()}.db")
+    db.backup_to_file(path)
+    return path
+
+
+def _prune_db_safety_backups():
+    try:
+        names = sorted(n for n in os.listdir(DB_SAFETY_BACKUP_DIR) if n.endswith(".db"))
+    except OSError:
+        return
+    for stale in (names[:-KEEP_DB_SAFETY_BACKUPS] if len(names) > KEEP_DB_SAFETY_BACKUPS else []):
+        try:
+            os.remove(os.path.join(DB_SAFETY_BACKUP_DIR, stale))
+        except OSError:
+            _logger.warning("Could not prune old database snapshot %s", stale)
+
+
+@app.route("/admin/about/restore-db", methods=["POST"])
+@login_required
+def admin_restore_db():
+    """Replaces the live database with an uploaded backup, then restarts.
+
+    Gated the same way every other destructive admin action in this app is
+    (login + CSRF + a client-side confirm()) - no 2FA to step up to here,
+    same tier as admin_update below. Order matters and isn't rearrangeable:
+    stage the upload (live database untouched) -> validate it -> snapshot
+    the *current* database (so a regretted restore stays recoverable) ->
+    replace -> restart, since every existing connection to the old file's
+    contents needs a clean slate."""
+    upload = request.files.get("backup")
+    if not upload or not upload.filename:
+        flash("Choose a backup file to restore.", "error")
+        return redirect(url_for("admin_about"))
+
+    os.makedirs(os.path.dirname(db.DB_PATH), exist_ok=True)
+    fd, staged = tempfile.mkstemp(prefix="restore-", suffix=".db", dir=os.path.dirname(db.DB_PATH))
+    os.close(fd)
+    snapshot = None
+    try:
+        try:
+            upload.save(staged)
+        except OSError as e:
+            flash(f"Could not read the uploaded file: {e}", "error")
+            return redirect(url_for("admin_about"))
+
+        error = db.validate_backup_file(staged)
+        if error:
+            flash(f"Restore refused: {error} Your database has not been touched.", "error")
+            return redirect(url_for("admin_about"))
+
+        try:
+            snapshot = _db_safety_snapshot()
+        except Exception as e:
+            _logger.exception("Could not snapshot the database before restoring")
+            flash(f"Restore aborted: couldn't back up your current database first ({e}). "
+                  "Nothing has been changed.", "error")
+            return redirect(url_for("admin_about"))
+
+        try:
+            db.restore_from_file(staged)
+        except Exception as e:
+            _logger.exception("Database restore failed")
+            flash(f"Restore failed: {e}. Your previous database was saved to "
+                  f"{snapshot} before the attempt.", "error")
+            return redirect(url_for("admin_about"))
+        # Renamed onto the live path by restore_from_file - not ours to clean up any more.
+        staged = None
+        _prune_db_safety_backups()
+    finally:
+        if staged and os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+
+    _logger.warning("Database restored from an uploaded backup; previous database saved to %s",
+                     os.path.basename(snapshot))
+    flash(f"Database restored. Your previous database was saved as "
+          f"{os.path.basename(snapshot)} in instance/db_backups/. Restarting now - this page "
+          f"will be briefly unreachable.", "success")
+    _restart_process()
     return redirect(url_for("admin_about"))
 
 

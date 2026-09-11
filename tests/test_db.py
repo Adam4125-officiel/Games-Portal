@@ -94,3 +94,75 @@ def test_get_active_request_for_appid(isolated_db):
     db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
     found = db.get_active_request_for_appid(70)
     assert found["name"] == "Half-Life"
+
+
+# ---------------------------------------------------------------------------
+# Backup / restore
+# ---------------------------------------------------------------------------
+def test_backup_to_file_produces_an_independently_openable_database(isolated_db, tmp_path):
+    import sqlite3
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    dest = str(tmp_path / "backup.db")
+    db.backup_to_file(dest)
+
+    conn = sqlite3.connect(dest)
+    rows = conn.execute("SELECT name FROM requests").fetchall()
+    conn.close()
+    assert rows == [("Half-Life",)]
+
+
+def test_validate_backup_file_rejects_a_non_sqlite_file(tmp_path):
+    import db
+    not_a_db = tmp_path / "not-a-db.db"
+    not_a_db.write_text("just some text, not a database")
+
+    error = db.validate_backup_file(str(not_a_db))
+    assert error is not None
+    assert "isn't a SQLite database" in error
+
+
+def test_validate_backup_file_rejects_a_database_missing_required_tables(tmp_path):
+    import sqlite3
+    import db
+    other_db = tmp_path / "unrelated.db"
+    conn = sqlite3.connect(str(other_db))
+    conn.execute("CREATE TABLE something_else (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    error = db.validate_backup_file(str(other_db))
+    assert error is not None
+    assert "isn't a games-portal backup" in error
+
+
+def test_validate_backup_file_accepts_a_real_backup(isolated_db, tmp_path):
+    import db
+    dest = str(tmp_path / "backup.db")
+    db.backup_to_file(dest)
+    assert db.validate_backup_file(dest) is None
+
+
+def test_restore_from_file_replaces_the_live_database(isolated_db, tmp_path):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    # A second, independent database with different data - standing in for an
+    # uploaded backup taken at some other point in time.
+    other_path = tmp_path / "test_portal_2.db"
+    original_db_path = db.DB_PATH
+    db.DB_PATH = str(other_path)
+    db.init_db()
+    db.create_request(220, "Half-Life 2", "", "", "jf-2", "Bob")
+    db.DB_PATH = original_db_path
+
+    staged = str(tmp_path / "staged-for-restore.db")
+    import shutil
+    shutil.copy2(other_path, staged)
+
+    db.restore_from_file(staged)
+
+    rows = db.list_requests()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Half-Life 2"

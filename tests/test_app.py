@@ -506,3 +506,71 @@ def test_admin_update_no_op_when_already_up_to_date_does_not_restart(admin_clien
     resp = admin_client.post("/admin/about/update", follow_redirects=True)
     assert b"Nothing to update" in resp.data
     assert restart_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Database backup / restore
+# ---------------------------------------------------------------------------
+def test_admin_backup_db_requires_login(client):
+    resp = client.get("/admin/about/backup-db")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+
+
+def test_admin_backup_db_downloads_a_valid_sqlite_database(admin_client):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    resp = admin_client.get("/admin/about/backup-db")
+    assert resp.status_code == 200
+    assert resp.data.startswith(db.SQLITE_HEADER)
+    assert "attachment" in resp.headers["Content-Disposition"]
+
+
+def test_admin_restore_db_requires_a_file(admin_client):
+    resp = admin_client.post("/admin/about/restore-db", data={}, follow_redirects=True)
+    assert b"Choose a backup file" in resp.data
+
+
+def test_admin_restore_db_rejects_a_bad_upload_without_touching_the_live_db(admin_client):
+    import db
+    import io
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    resp = admin_client.post(
+        "/admin/about/restore-db",
+        data={"backup": (io.BytesIO(b"not a database"), "backup.db")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert b"Restore refused" in resp.data
+    assert db.get_request(rid) is not None
+
+
+def test_admin_restore_db_replaces_the_data_and_restarts(admin_client, monkeypatch, tmp_path):
+    import io
+    import db
+
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    # Build a standalone "uploaded backup" with different data.
+    other_path = tmp_path / "other.db"
+    original_db_path = db.DB_PATH
+    db.DB_PATH = str(other_path)
+    db.init_db()
+    db.create_request(220, "Half-Life 2", "", "", "jf-2", "Bob")
+    db.DB_PATH = original_db_path
+    upload_bytes = other_path.read_bytes()
+
+    restart_calls = []
+    monkeypatch.setattr(app_module, "_restart_process", lambda: restart_calls.append(1))
+
+    resp = admin_client.post(
+        "/admin/about/restore-db",
+        data={"backup": (io.BytesIO(upload_bytes), "backup.db")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Database restored" in resp.data
+    assert restart_calls == [1]
+
+    rows = db.list_requests()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Half-Life 2"

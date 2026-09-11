@@ -18,6 +18,88 @@ def get_db():
     return conn
 
 
+# ---------------------------------------------------------------------------
+# Manual backup/restore (see app.py's /admin/about/backup-db and
+# /admin/about/restore-db). Simpler than a WAL-mode setup would need: this
+# database runs SQLite's default rollback-journal mode (nothing here ever
+# sets PRAGMA journal_mode), so there's no -wal/-shm sidecar dance - only a
+# possible stray -journal left behind by an interrupted write.
+# ---------------------------------------------------------------------------
+def backup_to_file(dest_path):
+    """Writes a consistent snapshot of the live database to dest_path via
+    SQLite's own online backup API - safe to call while another connection is
+    mid-write, unlike a plain file copy, which could catch a torn transaction."""
+    source = sqlite3.connect(DB_PATH)
+    dest = sqlite3.connect(dest_path)
+    with dest:
+        source.backup(dest)
+    source.close()
+    dest.close()
+
+
+# Every SQLite file starts with this exact 16-byte string - checked first
+# because it rejects the overwhelmingly common mistake (the wrong file, a
+# renamed non-database) instantly, without handing untrusted bytes to SQLite.
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+# Tables a file must contain before this app accepts it as *its own* backup.
+# The header and an integrity check together only prove "a valid SQLite
+# database," which plenty of unrelated files also are - restoring one of
+# those would wipe this app's own data and likely leave it unable to start.
+# Deliberately excludes installed_games (the scanner's table, added after
+# requests/settings already existed) so a backup taken before the scanner
+# existed stays restorable.
+RESTORE_REQUIRED_TABLES = ("settings", "requests")
+
+
+def validate_backup_file(path):
+    """Returns None if `path` is a well-formed SQLite database that looks
+    like this app's own, otherwise a string explaining why not - meant to be
+    shown to the admin verbatim. Runs entirely against a temporary copy;
+    nothing here touches the live database."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(SQLITE_HEADER))
+    except OSError as e:
+        return f"Could not read the uploaded file: {e}"
+    if header != SQLITE_HEADER:
+        return "That file isn't a SQLite database (its header doesn't match)."
+
+    conn = None
+    try:
+        # Read-only, via a URI, so validating a file can never have side
+        # effects even if the path were somehow wrong.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        if not result or result[0] != "ok":
+            detail = result[0] if result else "no result"
+            return f"That database failed SQLite's integrity check ({detail})."
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    except sqlite3.DatabaseError as e:
+        return f"That file couldn't be opened as a database: {e}"
+    finally:
+        if conn is not None:
+            conn.close()
+
+    missing = [t for t in RESTORE_REQUIRED_TABLES if t not in names]
+    if missing:
+        return ("That's a valid SQLite database, but it isn't a games-portal backup - "
+                f"it has no {', '.join(missing)} table(s).")
+    return None
+
+
+def restore_from_file(src_path):
+    """Replaces the live database with `src_path`. Assumes it has already
+    been validated - this does the dangerous part, not the deciding.
+    os.replace() is atomic on both platforms, so a crash mid-restore leaves
+    either the old database or the new one, never half of either."""
+    os.replace(src_path, DB_PATH)
+    try:
+        os.remove(DB_PATH + "-journal")
+    except FileNotFoundError:
+        pass
+
+
 def _ensure_column(conn, table, column, ddl):
     """Adds `column` to `table` if an existing database predates it -
     CREATE TABLE IF NOT EXISTS only helps for a brand-new database; an
