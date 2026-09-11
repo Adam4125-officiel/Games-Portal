@@ -6,6 +6,7 @@ os.environ directly - add new settings here instead.
 import logging
 import os
 import secrets
+import time
 
 from dotenv import load_dotenv
 
@@ -45,18 +46,53 @@ VERSION_DISPLAY = VERSION + ("+dev" if IS_GIT_CHECKOUT else "")
 # visitors alike) every time the app restarts.
 SECRET_KEY_FILE = os.path.join(APP_ROOT, "instance", "secret_key")
 
+# How many times (and how long between) to retry a failed read of an
+# *existing* secret_key file before concluding it's unreadable and generating
+# a new one. Guards against a transient lock - a cloud-synced folder (OneDrive,
+# Dropbox) or antivirus real-time scanning briefly holding the file open right
+# after it's written is a real, reported cause on Windows (a Desktop folder is
+# a common default OneDrive sync target) - rather than treating one momentary
+# failure as "the key is gone" and silently signing everyone out.
+SECRET_KEY_READ_RETRY_ATTEMPTS = 3
+SECRET_KEY_READ_RETRY_DELAY_SECONDS = 0.3
+
+
+def _read_secret_key_with_retry():
+    """The persisted key, or None if it genuinely doesn't exist yet (the
+    normal first-run case - fails fast, no point retrying that) or couldn't
+    be read even after retrying past a transient failure."""
+    if not os.path.isfile(SECRET_KEY_FILE):
+        return None
+    last_error = None
+    for attempt in range(SECRET_KEY_READ_RETRY_ATTEMPTS):
+        try:
+            with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
+                stored = f.read().strip()
+            if stored:
+                return stored
+            break  # exists but empty - not a lock, retrying won't help
+        except OSError as e:
+            last_error = e
+            if attempt + 1 < SECRET_KEY_READ_RETRY_ATTEMPTS:
+                time.sleep(SECRET_KEY_READ_RETRY_DELAY_SECONDS)
+    if last_error:
+        _logger.warning(
+            "Could not read the persisted session secret key at %s after %d attempt(s) (%s) - "
+            "generating a new one for this process, which will sign everyone out. If this keeps "
+            "happening: something is locking that file - a cloud-synced folder (OneDrive, "
+            "Dropbox) or antivirus real-time scanning are common causes on Windows. Moving this "
+            "app's folder outside any synced location usually fixes it.",
+            SECRET_KEY_FILE, SECRET_KEY_READ_RETRY_ATTEMPTS, last_error)
+    return None
+
 
 def _load_or_create_secret_key():
     env_key = os.environ.get("PORTAL_SECRET_KEY", "").strip()
     if env_key:
         return env_key
-    try:
-        with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
-            stored = f.read().strip()
-        if stored:
-            return stored
-    except OSError:
-        pass
+    stored = _read_secret_key_with_retry()
+    if stored:
+        return stored
     key = secrets.token_hex(32)
     try:
         os.makedirs(os.path.dirname(SECRET_KEY_FILE), exist_ok=True)
