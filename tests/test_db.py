@@ -176,24 +176,27 @@ def test_restore_from_file_replaces_the_live_database(isolated_db, tmp_path):
 # EXISTS is a silent no-op against a table that already exists, so the
 # missing column was never added on any of that install's later restarts.
 # ---------------------------------------------------------------------------
-def test_init_db_repairs_an_installed_games_table_missing_columns(tmp_path, monkeypatch):
+def test_init_db_repairs_an_installed_games_table_missing_a_column(tmp_path, monkeypatch):
+    """The actual real-world crash this guards against: an install already had
+    a root_path-shaped installed_games table (this schema), just missing one
+    column added after it - CREATE TABLE IF NOT EXISTS is a no-op there, so
+    only _ensure_column() repairs it, in place, preserving existing rows."""
     import sqlite3
     import db
     db_path = str(tmp_path / "legacy.db")
     monkeypatch.setattr(db, "DB_PATH", db_path)
 
-    # An older/incomplete installed_games table, as if left behind by a
-    # previous version of this app - missing every column added since,
-    # including the one the real crash report named specifically.
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE installed_games (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_name TEXT NOT NULL UNIQUE
+            root_path TEXT NOT NULL,
+            folder_name TEXT NOT NULL,
+            UNIQUE(root_path, folder_name)
         )
     """)
-    conn.execute("INSERT INTO installed_games (folder_name) VALUES (?)",
-                 ("Half-Life 2 {steamapp-220}",))
+    conn.execute("INSERT INTO installed_games (root_path, folder_name) VALUES (?, ?)",
+                 ("/games", "Half-Life 2 {steamapp-220}"))
     conn.commit()
     conn.close()
 
@@ -203,6 +206,42 @@ def test_init_db_repairs_an_installed_games_table_missing_columns(tmp_path, monk
     assert row["folder_name"] == "Half-Life 2 {steamapp-220}"  # pre-existing data survives
     assert row["status"] == "unmatched"  # the missing column now exists with a sane default
 
-    # The exact call from the production traceback now works.
-    db.upsert_scanned_folder("Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
+    # The exact call shape from the original production traceback now works.
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
     assert db.matched_appids() == {220}
+
+
+def test_init_db_recreates_an_installed_games_table_that_predates_multi_folder_support(
+        tmp_path, monkeypatch):
+    """The table's very first shape (before root_path existed at all, keyed by
+    folder_name alone) can't be patched with _ensure_column() - a UNIQUE
+    constraint can't be altered in place in SQLite. Since every row here is
+    scanner.py's own rebuildable cache (never real user data - this table is
+    deliberately excluded from the backup/restore required-tables check),
+    the safe fix is to drop and recreate it fresh rather than attempt a
+    manual table-rebuild migration for data that doesn't need to survive."""
+    import sqlite3
+    import db
+    db_path = str(tmp_path / "legacy.db")
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE installed_games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_name TEXT NOT NULL UNIQUE,
+            steam_appid INTEGER,
+            status TEXT NOT NULL DEFAULT 'unmatched',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    db.init_db()  # must not raise
+
+    assert db.list_scanned_folders() == []
+    row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
+    assert db.get_scanned_folder(row_id)["root_path"] == "/games"

@@ -202,22 +202,13 @@ ENABLE_INAPP_UPDATE = os.environ.get("PORTAL_ENABLE_INAPP_UPDATE", "true").lower
 # ---------------------------------------------------------------------------
 # Games-folder scanner (see scanner.py)
 # ---------------------------------------------------------------------------
-# Blank disables the scanner entirely - same "blank means off" pattern as
-# JELLYFIN_URL above. Deploy-time config, not a DB setting: a filesystem path
-# is not something to hand to a form field.
-GAMES_FOLDER = os.environ.get("PORTAL_GAMES_FOLDER", "").strip()
-
-# How often the background scanner re-walks GAMES_FOLDER, in seconds. Cheap on
-# its own (a local os.listdir), but an untagged folder's fuzzy-match step calls
-# out to Steam - this interval is the throttle on that, not on the filesystem
-# walk itself.
-SCAN_INTERVAL_SECONDS = int(os.environ.get("PORTAL_SCAN_INTERVAL_SECONDS", "3600"))
-
-# rapidfuzz.fuzz.WRatio score (0-100) an untagged folder's best Steam search
-# match must clear to surface as "possible match?" for the admin - never to
-# auto-resolve. Below this, a folder is left unmatched rather than nagging the
-# admin with a low-confidence guess every scan.
-SCAN_FUZZY_MATCH_THRESHOLD = int(os.environ.get("PORTAL_SCAN_FUZZY_MATCH_THRESHOLD", "82"))
+# Deliberately NOT here: which folder(s) to scan, the scan interval, and the
+# fuzzy-match threshold are all DB settings edited live from /admin/scanner,
+# not env vars. Earlier versions of this app had them here as
+# PORTAL_GAMES_FOLDER etc. - moved on request, since a filesystem path list is
+# exactly the kind of thing that's tedious to maintain by hand-editing .env
+# and restarting every time a disk is added or removed. See scanner.py's
+# games_folders()/set_games_folders() and friends.
 
 # ---------------------------------------------------------------------------
 # Logging

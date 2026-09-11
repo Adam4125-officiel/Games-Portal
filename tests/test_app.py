@@ -228,29 +228,44 @@ def test_admin_delete_requires_login(client):
 
 
 # ---------------------------------------------------------------------------
-# Games-folder scanner admin routes
+# Games-folder scanner admin routes - always reachable, even unconfigured
+# (see app.py's admin_scanner), so there's somewhere to actually add a
+# folder from. Settings (which folders, scan interval, fuzzy threshold) are
+# DB-backed, edited from this same page - see scanner.py.
 # ---------------------------------------------------------------------------
-def test_admin_scanner_404s_when_not_configured(admin_client):
-    assert admin_client.get("/admin/scanner").status_code == 404
-    assert admin_client.post("/admin/scanner/scan").status_code == 404
-    assert admin_client.post("/admin/scanner/1/confirm").status_code == 404
+def test_admin_scanner_page_is_reachable_with_nothing_configured(admin_client):
+    resp = admin_client.get("/admin/scanner")
+    assert resp.status_code == 200
+    assert b"No games folders configured" in resp.data
 
 
-def test_admin_scanner_requires_login(client, monkeypatch, tmp_path):
-    import config as config_module
-    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+def test_admin_scanner_scan_with_nothing_configured_flashes_a_hint_not_a_404(admin_client):
+    resp = admin_client.post("/admin/scanner/scan", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Add at least one games folder" in resp.data
+
+
+def test_admin_scanner_requires_login(client):
     resp = client.get("/admin/scanner")
     assert resp.status_code == 302
     assert "/admin/login" in resp.headers["Location"]
 
 
-def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, monkeypatch, tmp_path):
-    import config as config_module
+def test_admin_scanner_nav_link_is_always_shown(admin_client):
+    """Confirms the nav entry doesn't depend on the scanner being configured
+    - it must always be there for the admin to actually reach the settings
+    that configure it in the first place."""
+    resp = admin_client.get("/admin/requests")
+    assert b"Folder Scanner" in resp.data
+
+
+def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, tmp_path):
     import db
-    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
-    db.upsert_scanned_folder("Half Life 2", "pending_review",
+    import scanner
+    scanner.set_games_folders(str(tmp_path))
+    db.upsert_scanned_folder(str(tmp_path), "Half Life 2", "pending_review",
                               candidate_appid=220, candidate_name="Half-Life 2", candidate_score=91.0)
-    db.upsert_scanned_folder("Mystery Game", "unmatched")
+    db.upsert_scanned_folder(str(tmp_path), "Mystery Game", "unmatched")
 
     resp = admin_client.get("/admin/scanner")
     assert resp.status_code == 200
@@ -258,10 +273,22 @@ def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, monkeypatc
     assert b"Mystery Game" in resp.data
 
 
-def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):
-    import config as config_module
+def test_admin_scanner_settings_saves_folders_interval_and_threshold(admin_client):
     import scanner
-    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+    resp = admin_client.post("/admin/scanner/settings", data={
+        "games_folders": "/mnt/games\n/mnt/games2",
+        "scan_interval_minutes": "15",
+        "fuzzy_match_threshold": "90",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    assert scanner.games_folders() == ["/mnt/games", "/mnt/games2"]
+    assert scanner.scan_interval_seconds() == 15 * 60
+    assert scanner.fuzzy_match_threshold() == 90
+
+
+def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):
+    import scanner
+    scanner.set_games_folders(str(tmp_path))
     monkeypatch.setattr(scanner, "scan_once",
                          lambda: {"scanned": 1, "matched": 1, "pending_review": 0, "unmatched": 0})
 
@@ -270,10 +297,8 @@ def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monk
     assert b"Scanned 1 folder" in resp.data
 
 
-def test_admin_scanner_confirm_flashes_the_scanner_error_on_refusal(admin_client, monkeypatch, tmp_path):
-    import config as config_module
+def test_admin_scanner_confirm_flashes_the_scanner_error_on_refusal(admin_client, monkeypatch):
     import scanner
-    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
 
     def boom(row_id, appid):
         raise scanner.ScannerError("That folder is gone.")

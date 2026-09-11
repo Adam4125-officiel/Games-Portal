@@ -137,14 +137,31 @@ def init_db():
         )
     """)
 
-    # One row per subfolder scanner.py has ever seen under PORTAL_GAMES_FOLDER.
-    # Deliberately not part of the backup/restore required-tables check in
-    # validate_backup_file() below - a backup taken before the scanner existed
-    # must stay restorable.
+    # installed_games predates multi-folder support and used to key rows by
+    # folder_name alone (globally unique) - that breaks the moment two
+    # configured root folders (two disks, say) each have a same-named
+    # subfolder. Rather than an in-place ALTER TABLE to change a UNIQUE
+    # constraint (SQLite has no direct syntax for that; it's a full
+    # rebuild-the-table dance either way), this table is dropped and
+    # recreated on the old shape - deliberately safe to do, unlike
+    # _ensure_column()'s data-preserving approach below: every row here is
+    # scanner.py's own rebuildable cache, not real user data (this table is
+    # already excluded from the backup/restore required-tables check for
+    # exactly that reason), and the very next scan repopulates it.
+    old_columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(installed_games)").fetchall()}
+    if old_columns and "root_path" not in old_columns:
+        conn.execute("DROP TABLE installed_games")
+
+    # One row per subfolder scanner.py has ever seen under one of its
+    # configured root folders. Deliberately not part of the backup/restore
+    # required-tables check in validate_backup_file() below - a backup taken
+    # before the scanner existed must stay restorable.
     c.execute("""
         CREATE TABLE IF NOT EXISTS installed_games (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_name TEXT NOT NULL UNIQUE,
+            root_path TEXT NOT NULL,
+            folder_name TEXT NOT NULL,
             steam_appid INTEGER,
             status TEXT NOT NULL DEFAULT 'unmatched',  -- matched | pending_review | unmatched
             candidate_appid INTEGER,
@@ -152,19 +169,17 @@ def init_db():
             candidate_score REAL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL
+            last_seen_at TEXT NOT NULL,
+            UNIQUE(root_path, folder_name)
         )
     """)
     # CREATE TABLE IF NOT EXISTS is a silent no-op against a table that already
-    # exists under an older/incomplete shape - a real install can hit this: an
-    # earlier in-app update once applied a since-superseded version of this
-    # table (a differently-shaped scanner attempt from before this one), and
-    # the live database still has it. Confirmed against a real report: `python
-    # serve_waitress.py` crashed every page load with `sqlite3.OperationalError:
-    # no such column: status` because exactly this happened - the table existed
-    # without a status column, and CREATE TABLE IF NOT EXISTS never touched it.
-    # _ensure_column() is idempotent, so this is safe to run on every startup
-    # regardless of whether the table was just freshly created above.
+    # exists under an older/incomplete shape - a real install has hit this
+    # before (see docs/HISTORY.md): an earlier in-app update once applied a
+    # since-superseded version of this table, and CREATE TABLE IF NOT EXISTS
+    # never touched the live one. _ensure_column() is idempotent, so this is
+    # safe to run on every startup regardless of whether the table was just
+    # freshly (re)created above.
     _ensure_column(conn, "installed_games", "steam_appid", "INTEGER")
     _ensure_column(conn, "installed_games", "status", "TEXT NOT NULL DEFAULT 'unmatched'")
     _ensure_column(conn, "installed_games", "candidate_appid", "INTEGER")
@@ -292,20 +307,22 @@ def delete_request(request_id):
 INSTALLED_GAME_STATUSES = ("matched", "pending_review", "unmatched")
 
 
-def upsert_scanned_folder(folder_name, status, steam_appid=None, candidate_appid=None,
+def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, candidate_appid=None,
                            candidate_name=None, candidate_score=None):
-    """Inserts or updates one folder's row by folder_name (its unique key) -
-    called once per folder, per scan pass, by scanner.scan_once()."""
+    """Inserts or updates one folder's row by (root_path, folder_name) - its
+    unique key now that more than one root folder can be configured (two
+    disks can each have a same-named subfolder). Called once per folder, per
+    scan pass, by scanner.scan_once()."""
     if status not in INSTALLED_GAME_STATUSES:
         raise ValueError(f"Unknown installed_games status: {status!r}")
     conn = get_db()
     ts = now_iso()
-    cur = conn.execute("""
+    conn.execute("""
         INSERT INTO installed_games
-            (folder_name, steam_appid, status, candidate_appid, candidate_name,
+            (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
              candidate_score, created_at, updated_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(folder_name) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(root_path, folder_name) DO UPDATE SET
             steam_appid=excluded.steam_appid,
             status=excluded.status,
             candidate_appid=excluded.candidate_appid,
@@ -313,10 +330,11 @@ def upsert_scanned_folder(folder_name, status, steam_appid=None, candidate_appid
             candidate_score=excluded.candidate_score,
             updated_at=excluded.updated_at,
             last_seen_at=excluded.last_seen_at
-    """, (folder_name, steam_appid, status, candidate_appid, candidate_name,
+    """, (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
           candidate_score, ts, ts, ts))
     conn.commit()
-    row = conn.execute("SELECT id FROM installed_games WHERE folder_name=?", (folder_name,)).fetchone()
+    row = conn.execute("SELECT id FROM installed_games WHERE root_path=? AND folder_name=?",
+                        (root_path, folder_name)).fetchone()
     conn.close()
     return row["id"]
 
@@ -324,10 +342,11 @@ def upsert_scanned_folder(folder_name, status, steam_appid=None, candidate_appid
 def list_scanned_folders(status=None):
     conn = get_db()
     if status:
-        rows = conn.execute("SELECT * FROM installed_games WHERE status=? ORDER BY folder_name",
-                             (status,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM installed_games WHERE status=? ORDER BY root_path, folder_name",
+            (status,)).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM installed_games ORDER BY folder_name").fetchall()
+        rows = conn.execute("SELECT * FROM installed_games ORDER BY root_path, folder_name").fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
@@ -341,9 +360,10 @@ def get_scanned_folder(row_id):
 
 def mark_folder_matched(row_id, folder_name, steam_appid):
     """Called after scanner.confirm_match() successfully renames a folder on
-    disk to embed its confirmed AppID tag - updates the row's folder_name to
-    match (folder_name is the table's unique key) and clears the now-stale
-    fuzzy-candidate fields."""
+    disk to embed its confirmed AppID tag - updates the row's folder_name
+    (root_path never changes; a confirmed match is always renamed in place,
+    never moved between roots) and clears the now-stale fuzzy-candidate
+    fields."""
     conn = get_db()
     ts = now_iso()
     conn.execute("""
@@ -368,16 +388,30 @@ def matched_appids():
     return {row["steam_appid"] for row in rows}
 
 
-def prune_scanned_folders(seen_folder_names):
-    """Removes rows for folders no longer present under GAMES_FOLDER. Called
-    once per scan pass, after every currently-present folder has already been
-    upserted - never with a possibly-incomplete listing (see
-    scanner.scan_once()'s own guard against an os.listdir() failure, which
-    skips the whole pass, prune included, rather than treating an empty/failed
-    listing as "nothing is installed any more")."""
+def prune_scanned_folders(configured_roots, scanned_roots, seen_pairs):
+    """Removes rows that are stale in one of two distinct ways:
+
+    - the row's root_path is no longer configured at all (the admin removed
+      it from the games-folders list) - a deliberate configuration change,
+      always safe to prune;
+    - the row's root_path *is* still configured and was successfully listed
+      this scan pass (scanned_roots), so we positively know what's currently
+      there, but this particular (root_path, folder_name) wasn't in it.
+
+    A row whose root is still configured but wasn't successfully scanned
+    this pass (a disk that's temporarily offline, say) is left completely
+    untouched either way - never treated as "gone" over a transient failure.
+    `seen_pairs` is a set of (root_path, folder_name) tuples actually found
+    this pass, across every root that was successfully listed."""
     conn = get_db()
-    rows = conn.execute("SELECT id, folder_name FROM installed_games").fetchall()
-    stale_ids = [row["id"] for row in rows if row["folder_name"] not in seen_folder_names]
+    rows = conn.execute("SELECT id, root_path, folder_name FROM installed_games").fetchall()
+    stale_ids = []
+    for row in rows:
+        root, name = row["root_path"], row["folder_name"]
+        if root not in configured_roots:
+            stale_ids.append(row["id"])
+        elif root in scanned_roots and (root, name) not in seen_pairs:
+            stale_ids.append(row["id"])
     if stale_ids:
         placeholders = ",".join("?" * len(stale_ids))
         conn.execute(f"DELETE FROM installed_games WHERE id IN ({placeholders})", stale_ids)

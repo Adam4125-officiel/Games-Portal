@@ -1,10 +1,10 @@
 {% extends "admin_base.html" %}
-{% block title %}Scanner — Admin{% endblock %}
+{% block title %}Folder Scanner — Admin{% endblock %}
 {% block admin_body %}
   <div class="topbar">
     <div>
       <div class="topbar__brand">Games folder scanner</div>
-      <div class="topbar__sub">Recognizing what's already installed under <code>{{ games_folder }}</code></div>
+      <div class="topbar__sub">Recognizing what's already installed, so it's never asked for twice</div>
     </div>
     <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
   </div>
@@ -16,12 +16,59 @@
   {% endwith %}
 
   <div class="panel">
+    <h2>Games folders</h2>
+    <p class="dim">
+      One folder per line - each subfolder inside is treated as one installed game. Add one
+      entry per disk if your library is split across drives; each is scanned independently, so
+      one being unplugged never affects the others.
+    </p>
+    {% if games_folders %}
+      <table class="info-table">
+        {% for f in games_folders %}
+          <tr>
+            <th>{{ '✓' if folder_exists[f] else '✗' }}</th>
+            <td><code>{{ f }}</code>{% if not folder_exists[f] %}
+              <span class="dim"> - not found right now (disk unplugged? typo?)</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p class="empty-state">No games folders configured yet - add at least one below.</p>
+    {% endif %}
+    <form method="POST" action="{{ url_for('admin_scanner_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="games_folders">Folders (one per line)</label>
+        <textarea name="games_folders" id="games_folders" rows="4"
+                  placeholder="/mnt/games&#10;D:\Games&#10;E:\MoreGames">{{ games_folders_text }}</textarea>
+      </div>
+      <div class="field">
+        <label for="scan_interval_minutes">Scan every (minutes)</label>
+        <input type="number" min="1" name="scan_interval_minutes" id="scan_interval_minutes"
+               value="{{ scan_interval_minutes }}">
+        <p class="field-hint">How often the background scan re-walks these folders. Takes effect on
+          the next cycle - no restart needed.</p>
+      </div>
+      <div class="field">
+        <label for="fuzzy_match_threshold">Fuzzy-match confidence (0-100)</label>
+        <input type="number" min="0" max="100" name="fuzzy_match_threshold" id="fuzzy_match_threshold"
+               value="{{ fuzzy_threshold }}">
+        <p class="field-hint">An untagged folder's best Steam match must clear this score to surface
+          as "awaiting review" below - never auto-applied regardless of this value.</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
     <h2>Scan</h2>
     <p class="dim">
       Tagged folders (<code>{steamapp-&lt;id&gt;}</code> anywhere in the name) are recognized
       instantly. Everything else is fuzzy-matched against Steam's catalog - a confident guess
       shows up below as "awaiting review," never auto-applied. Runs automatically in the
-      background too; this is just an on-demand pass.
+      background too, on the interval above; this is just an on-demand pass.
     </p>
     <p class="dim"><strong>{{ matched_count }}</strong> folder(s) currently recognized.</p>
     <form method="POST" action="{{ url_for('admin_scanner_scan') }}">
@@ -40,6 +87,7 @@
         <div class="request-row">
           <div class="request-row__body">
             <div class="request-row__title">{{ row.folder_name }}</div>
+            {% if multiple_roots %}<p class="request-row__meta"><code>{{ row.root_path }}</code></p>{% endif %}
             <p class="request-row__desc">
               Possible match: <strong>{{ row.candidate_name }}</strong>
               (AppID {{ row.candidate_appid }}, score {{ "%.0f"|format(row.candidate_score) }})
@@ -66,6 +114,7 @@
         <div class="request-row">
           <div class="request-row__body">
             <div class="request-row__title">{{ row.folder_name }}</div>
+            {% if multiple_roots %}<p class="request-row__meta"><code>{{ row.root_path }}</code></p>{% endif %}
             <p class="request-row__desc">No confident Steam match - enter the AppID by hand if you know it.</p>
           </div>
           <form class="request-row__form" method="POST"

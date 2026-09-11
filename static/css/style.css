@@ -315,6 +315,7 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 
 .field { margin-bottom: 14px; }
 .field input { width: 100%; }
+.field textarea { width: 100%; resize: vertical; font-family: var(--font-mono); }
 
 .form-actions { display: flex; gap: 10px; margin-top: 18px; }
 

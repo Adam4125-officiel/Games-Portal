@@ -101,8 +101,7 @@ app.jinja_env.globals["csrf_token"] = _get_csrf_token
 
 @app.context_processor
 def _inject_globals():
-    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled(),
-            "scanner_enabled": scanner.is_enabled()}
+    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled()}
 
 
 # ---------------------------------------------------------------------------
@@ -515,41 +514,67 @@ def admin_delete_request(request_id):
 
 
 # ---------------------------------------------------------------------------
-# Games-folder scanner (see scanner.py)
+# Games-folder scanner (see scanner.py) - always reachable from the admin nav,
+# even with nothing configured yet, so there's somewhere to actually add a
+# folder from. Only scan_once()/confirm_match() care whether it's configured,
+# and both already degrade gracefully (a no-op scan, a "not configured" error)
+# rather than needing a route-level gate.
 # ---------------------------------------------------------------------------
 @app.route("/admin/scanner")
 @login_required
 def admin_scanner():
-    if not scanner.is_enabled():
-        abort(404)
+    folders = scanner.games_folders()
     return render_template(
         "admin_scanner.html", active="scanner",
         pending=db.list_scanned_folders(status="pending_review"),
         unmatched=db.list_scanned_folders(status="unmatched"),
         matched_count=len(db.list_scanned_folders(status="matched")),
-        games_folder=config.GAMES_FOLDER,
+        games_folders=folders,
+        games_folders_text="\n".join(folders),
+        folder_exists={f: scanner.folder_exists(f) for f in folders},
+        multiple_roots=len(folders) > 1,
+        scan_interval_minutes=db.get_setting(
+            scanner.SCAN_INTERVAL_MINUTES_SETTING, str(scanner.DEFAULT_SCAN_INTERVAL_MINUTES)),
+        fuzzy_threshold=scanner.fuzzy_match_threshold(),
     )
+
+
+@app.route("/admin/scanner/settings", methods=["POST"])
+@login_required
+def admin_scanner_settings():
+    scanner.set_games_folders(request.form.get("games_folders", ""))
+
+    interval_raw = request.form.get("scan_interval_minutes", "")
+    if interval_raw.isdigit() and int(interval_raw) > 0:
+        scanner.set_scan_interval_minutes(int(interval_raw))
+
+    threshold_raw = request.form.get("fuzzy_match_threshold", "")
+    if threshold_raw.isdigit():
+        scanner.set_fuzzy_match_threshold(int(threshold_raw))
+
+    flash("Scanner settings saved.", "success")
+    return redirect(url_for("admin_scanner"))
 
 
 @app.route("/admin/scanner/scan", methods=["POST"])
 @login_required
 def admin_scanner_scan():
     if not scanner.is_enabled():
-        abort(404)
+        flash("Add at least one games folder below before scanning.", "error")
+        return redirect(url_for("admin_scanner"))
     result = scanner.scan_once()
-    if "error" in result:
-        flash(f"Could not scan the games folder: {result['error']}", "error")
+    summary = (f"Scanned {result['scanned']} folder(s): {result['matched']} matched, "
+               f"{result['pending_review']} awaiting review, {result['unmatched']} unmatched.")
+    if result.get("errors"):
+        flash(f"{summary} Could not read: {'; '.join(result['errors'])}", "error")
     else:
-        flash(f"Scanned {result['scanned']} folder(s): {result['matched']} matched, "
-              f"{result['pending_review']} awaiting review, {result['unmatched']} unmatched.", "success")
+        flash(summary, "success")
     return redirect(url_for("admin_scanner"))
 
 
 @app.route("/admin/scanner/<int:row_id>/confirm", methods=["POST"])
 @login_required
 def admin_scanner_confirm(row_id):
-    if not scanner.is_enabled():
-        abort(404)
     raw_appid = request.form.get("appid", "")
     if not raw_appid.isdigit():
         flash("Enter a numeric Steam AppID.", "error")

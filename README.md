@@ -59,8 +59,12 @@ see `tests/test_jellyfin_12_compat.py`.
 
 ## Games-folder scanner
 
-Set `PORTAL_GAMES_FOLDER` (a root folder, one subfolder per installed game) to
-enable it - same idea as Sonarr/Radarr's library scan. Matching, in order:
+Configured entirely from **Folder Scanner** in the admin nav - no `.env`
+editing or restart needed, same idea as Sonarr/Radarr's library scan. Add one
+or more root folders (one subfolder per installed game each; one entry per
+disk if your library spans more than one - each is scanned independently, so
+one being unplugged never affects the others), a scan interval, and a
+fuzzy-match confidence threshold, all editable live. Matching, in order:
 
 1. **A tag already in the folder name.** This app tags a folder as
    `{steamapp-<appid>}` anywhere in its name, e.g. `Half-Life 2 {steamapp-220}`
@@ -68,14 +72,19 @@ enable it - same idea as Sonarr/Radarr's library scan. Matching, in order:
    deliberately echoing Sonarr's own real `{tvdb-<id>}` convention. A tagged
    folder is recognized instantly, no network call needed.
 2. **A fuzzy match against Steam's catalog** for anything untagged. Never
-   auto-accepted - a confident guess (`PORTAL_SCAN_FUZZY_MATCH_THRESHOLD`,
-   default 82) shows up under `/admin/scanner` as "awaiting review" for the
-   admin to confirm or correct. Confirming it (whichever way it was found)
-   renames the folder on disk to add the tag, so the next scan recognizes it
-   directly instead of fuzzy-matching it again.
+   auto-accepted - a confident guess (default confidence 82) shows up on the
+   Folder Scanner page as "awaiting review" for the admin to confirm or
+   correct. Confirming it (whichever way it was found) renames the folder on
+   disk to add the tag, so the next scan recognizes it directly instead of
+   fuzzy-matching it again.
 
 Once a game is recognized, the search page shows an "installed" badge instead
 of a Request button, and a duplicate request for it is refused.
+
+Under Docker, a folder still needs to be bind-mounted into the container
+first (see `docker-compose.yml`'s comments, including how to add more than
+one for multiple disks) - you then enter its *container-side* path into the
+admin UI, same as any other folder.
 
 ## Visual style
 
