@@ -1,0 +1,81 @@
+{% extends "admin_base.html" %}
+{% block title %}Scanner — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">Games folder scanner</div>
+      <div class="topbar__sub">Recognizing what's already installed under <code>{{ games_folder }}</code></div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Scan</h2>
+    <p class="dim">
+      Tagged folders (<code>{steamapp-&lt;id&gt;}</code> anywhere in the name) are recognized
+      instantly. Everything else is fuzzy-matched against Steam's catalog - a confident guess
+      shows up below as "awaiting review," never auto-applied. Runs automatically in the
+      background too; this is just an on-demand pass.
+    </p>
+    <p class="dim"><strong>{{ matched_count }}</strong> folder(s) currently recognized.</p>
+    <form method="POST" action="{{ url_for('admin_scanner_scan') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary">Scan now</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Awaiting review ({{ pending|length }})</h2>
+    {% if not pending %}
+      <p class="empty-state">Nothing waiting on a confirmation.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for row in pending %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ row.folder_name }}</div>
+            <p class="request-row__desc">
+              Possible match: <strong>{{ row.candidate_name }}</strong>
+              (AppID {{ row.candidate_appid }}, score {{ "%.0f"|format(row.candidate_score) }})
+            </p>
+          </div>
+          <form class="request-row__form" method="POST"
+                action="{{ url_for('admin_scanner_confirm', row_id=row.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="number" name="appid" value="{{ row.candidate_appid }}" min="1" required>
+            <button type="submit" class="btn small">Confirm match</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Unmatched ({{ unmatched|length }})</h2>
+    {% if not unmatched %}
+      <p class="empty-state">Nothing left unmatched.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for row in unmatched %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ row.folder_name }}</div>
+            <p class="request-row__desc">No confident Steam match - enter the AppID by hand if you know it.</p>
+          </div>
+          <form class="request-row__form" method="POST"
+                action="{{ url_for('admin_scanner_confirm', row_id=row.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="number" name="appid" placeholder="Steam AppID" min="1" required>
+            <button type="submit" class="btn small">Confirm match</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

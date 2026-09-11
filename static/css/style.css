@@ -283,6 +283,7 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .badge.downloading { background: var(--maint-dim); color: var(--maint); }
 .badge.done { background: var(--ok-dim); color: var(--ok); }
 .badge.rejected { background: var(--crit-dim); color: var(--crit); }
+.badge.installed { background: var(--ok-dim); color: var(--ok); }
 .badge.warn { background: var(--warn-dim); color: var(--warn); text-transform: none; }
 .badge.maint { background: var(--maint-dim); color: var(--maint); text-transform: none; }
 

@@ -25,8 +25,24 @@ services:
       - PORTAL_STEAM_SEARCH_RESULT_LIMIT=${PORTAL_STEAM_SEARCH_RESULT_LIMIT:-10}
       - PORTAL_SEARCH_RATE_LIMIT=${PORTAL_SEARCH_RATE_LIMIT:-30}
       - PORTAL_SEARCH_RATE_WINDOW_SECONDS=${PORTAL_SEARCH_RATE_WINDOW_SECONDS:-60}
+      # Defaults to /games (not blank, unlike .env.example's native-Python
+      # default) since the volume below always bind-mounts something there
+      # anyway - set GAMES_FOLDER_HOST_PATH and the scanner just works.
+      - PORTAL_GAMES_FOLDER=${PORTAL_GAMES_FOLDER:-/games}
+      - PORTAL_SCAN_INTERVAL_SECONDS=${PORTAL_SCAN_INTERVAL_SECONDS:-3600}
+      - PORTAL_SCAN_FUZZY_MATCH_THRESHOLD=${PORTAL_SCAN_FUZZY_MATCH_THRESHOLD:-82}
     volumes:
       - portal_data:/app/instance
+      # Bind-mounted, unlike instance/'s named volume, since this points at a
+      # real games library that already exists on the host. Always mounted -
+      # Compose has no clean way to make a volume conditional - but harmless
+      # (an unused empty directory) when PORTAL_GAMES_FOLDER below is left
+      # blank, which is what actually disables the scanner. Point
+      # GAMES_FOLDER_HOST_PATH at your real games library. It's a plain host
+      # path, not itself read by config.py - separate from PORTAL_GAMES_FOLDER
+      # (the path *inside* the container that config.py does read) for the
+      # same reason PORTAL_PORT and HOST_PORT above are two separate variables.
+      - ${GAMES_FOLDER_HOST_PATH:-./games}:/games
     restart: unless-stopped
 
 volumes:

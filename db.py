@@ -55,6 +55,25 @@ def init_db():
         )
     """)
 
+    # One row per subfolder scanner.py has ever seen under PORTAL_GAMES_FOLDER.
+    # Deliberately not part of the backup/restore required-tables check in
+    # validate_backup_file() below - a backup taken before the scanner existed
+    # must stay restorable.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS installed_games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_name TEXT NOT NULL UNIQUE,
+            steam_appid INTEGER,
+            status TEXT NOT NULL DEFAULT 'unmatched',  -- matched | pending_review | unmatched
+            candidate_appid INTEGER,
+            candidate_name TEXT,
+            candidate_score REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -164,4 +183,103 @@ def delete_request(request_id):
     conn = get_db()
     conn.execute("DELETE FROM requests WHERE id=?", (request_id,))
     conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Installed-games scanner (see scanner.py)
+# ---------------------------------------------------------------------------
+INSTALLED_GAME_STATUSES = ("matched", "pending_review", "unmatched")
+
+
+def upsert_scanned_folder(folder_name, status, steam_appid=None, candidate_appid=None,
+                           candidate_name=None, candidate_score=None):
+    """Inserts or updates one folder's row by folder_name (its unique key) -
+    called once per folder, per scan pass, by scanner.scan_once()."""
+    if status not in INSTALLED_GAME_STATUSES:
+        raise ValueError(f"Unknown installed_games status: {status!r}")
+    conn = get_db()
+    ts = now_iso()
+    cur = conn.execute("""
+        INSERT INTO installed_games
+            (folder_name, steam_appid, status, candidate_appid, candidate_name,
+             candidate_score, created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(folder_name) DO UPDATE SET
+            steam_appid=excluded.steam_appid,
+            status=excluded.status,
+            candidate_appid=excluded.candidate_appid,
+            candidate_name=excluded.candidate_name,
+            candidate_score=excluded.candidate_score,
+            updated_at=excluded.updated_at,
+            last_seen_at=excluded.last_seen_at
+    """, (folder_name, steam_appid, status, candidate_appid, candidate_name,
+          candidate_score, ts, ts, ts))
+    conn.commit()
+    row = conn.execute("SELECT id FROM installed_games WHERE folder_name=?", (folder_name,)).fetchone()
+    conn.close()
+    return row["id"]
+
+
+def list_scanned_folders(status=None):
+    conn = get_db()
+    if status:
+        rows = conn.execute("SELECT * FROM installed_games WHERE status=? ORDER BY folder_name",
+                             (status,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM installed_games ORDER BY folder_name").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_scanned_folder(row_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM installed_games WHERE id=?", (row_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_folder_matched(row_id, folder_name, steam_appid):
+    """Called after scanner.confirm_match() successfully renames a folder on
+    disk to embed its confirmed AppID tag - updates the row's folder_name to
+    match (folder_name is the table's unique key) and clears the now-stale
+    fuzzy-candidate fields."""
+    conn = get_db()
+    ts = now_iso()
+    conn.execute("""
+        UPDATE installed_games
+        SET folder_name=?, steam_appid=?, status='matched',
+            candidate_appid=NULL, candidate_name=NULL, candidate_score=NULL,
+            updated_at=?, last_seen_at=?
+        WHERE id=?
+    """, (folder_name, steam_appid, ts, ts, row_id))
+    conn.commit()
+    conn.close()
+
+
+def matched_appids():
+    """Every Steam AppID currently recognized as installed - used by app.py to
+    hide the Request button / refuse a duplicate request for a game already
+    present on disk."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT steam_appid FROM installed_games WHERE status='matched'").fetchall()
+    conn.close()
+    return {row["steam_appid"] for row in rows}
+
+
+def prune_scanned_folders(seen_folder_names):
+    """Removes rows for folders no longer present under GAMES_FOLDER. Called
+    once per scan pass, after every currently-present folder has already been
+    upserted - never with a possibly-incomplete listing (see
+    scanner.scan_once()'s own guard against an os.listdir() failure, which
+    skips the whole pass, prune included, rather than treating an empty/failed
+    listing as "nothing is installed any more")."""
+    conn = get_db()
+    rows = conn.execute("SELECT id, folder_name FROM installed_games").fetchall()
+    stale_ids = [row["id"] for row in rows if row["folder_name"] not in seen_folder_names]
+    if stale_ids:
+        placeholders = ",".join("?" * len(stale_ids))
+        conn.execute(f"DELETE FROM installed_games WHERE id IN ({placeholders})", stale_ids)
+        conn.commit()
     conn.close()

@@ -18,6 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import config
 import db
 import jellyfin_auth
+import scanner
 import steam
 import updater
 
@@ -93,7 +94,8 @@ app.jinja_env.globals["csrf_token"] = _get_csrf_token
 
 @app.context_processor
 def _inject_globals():
-    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled()}
+    return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled(),
+            "scanner_enabled": scanner.is_enabled()}
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +313,9 @@ def index():
                 search_error = "Steam search is unavailable right now. Please try again shortly."
 
     existing = db.active_request_appids([r["appid"] for r in results])
+    installed = scanner.matched_appids()
     for r in results:
-        r["existing_status"] = existing.get(r["appid"])
+        r["existing_status"] = existing.get(r["appid"]) or ("installed" if r["appid"] in installed else None)
 
     return render_template("index.html", query=query, results=results, search_error=search_error)
 
@@ -329,6 +332,10 @@ def submit_request():
 
     if db.get_active_request_for_appid(appid):
         flash("That game has already been requested.", "error")
+        return redirect(next_url)
+
+    if appid in scanner.matched_appids():
+        flash("That game is already installed.", "error")
         return redirect(next_url)
 
     summary = steam.fetch_app_summary(appid)
@@ -483,6 +490,55 @@ def admin_delete_request(request_id):
     db.delete_request(request_id)
     flash("Request deleted.", "success")
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
+
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner (see scanner.py)
+# ---------------------------------------------------------------------------
+@app.route("/admin/scanner")
+@login_required
+def admin_scanner():
+    if not scanner.is_enabled():
+        abort(404)
+    return render_template(
+        "admin_scanner.html", active="scanner",
+        pending=db.list_scanned_folders(status="pending_review"),
+        unmatched=db.list_scanned_folders(status="unmatched"),
+        matched_count=len(db.list_scanned_folders(status="matched")),
+        games_folder=config.GAMES_FOLDER,
+    )
+
+
+@app.route("/admin/scanner/scan", methods=["POST"])
+@login_required
+def admin_scanner_scan():
+    if not scanner.is_enabled():
+        abort(404)
+    result = scanner.scan_once()
+    if "error" in result:
+        flash(f"Could not scan the games folder: {result['error']}", "error")
+    else:
+        flash(f"Scanned {result['scanned']} folder(s): {result['matched']} matched, "
+              f"{result['pending_review']} awaiting review, {result['unmatched']} unmatched.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/<int:row_id>/confirm", methods=["POST"])
+@login_required
+def admin_scanner_confirm(row_id):
+    if not scanner.is_enabled():
+        abort(404)
+    raw_appid = request.form.get("appid", "")
+    if not raw_appid.isdigit():
+        flash("Enter a numeric Steam AppID.", "error")
+        return redirect(url_for("admin_scanner"))
+    try:
+        result = scanner.confirm_match(row_id, int(raw_appid))
+    except scanner.ScannerError as e:
+        flash(str(e), "error")
+    else:
+        flash(f'Matched "{result["folder_name"]}" to {result["name"]} (AppID {result["appid"]}).', "success")
+    return redirect(url_for("admin_scanner"))
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +722,7 @@ if __name__ == "__main__":
     # taken effect).
     updater.check_pending_marker()
     updater.start_background_checker()
+    scanner.start_background_scanner()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
     # debug=False deliberately: the Werkzeug reloader's WERKZEUG_SERVER_FD
     # handoff and this app's own os.execv()-based self-restart (see

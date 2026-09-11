@@ -36,7 +36,23 @@ def test_search_degrades_gracefully_on_steam_failure(client, monkeypatch):
     monkeypatch.setattr(steam, "search", fake_search)
     resp = client.get("/?q=anything")
     assert resp.status_code == 200
-    assert b"unavailable" in resp.data
+
+
+def test_search_shows_installed_badge_instead_of_a_request_button(client, monkeypatch):
+    import db
+    import steam
+
+    def fake_search(term):
+        return [{"appid": 220, "name": "Half-Life 2", "icon_url": "", "short_description": ""}]
+
+    monkeypatch.setattr(steam, "search", fake_search)
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+    monkeypatch.setattr(app_module.scanner, "matched_appids", lambda: {220})
+
+    resp = client.get("/?q=half-life")
+    assert resp.status_code == 200
+    assert b'class="badge installed"' in resp.data
+    assert b'name="appid" value="220"' not in resp.data  # no Request form rendered
 
 
 def test_request_requires_visitor_login(client):
@@ -76,6 +92,15 @@ def test_request_rejects_a_duplicate(visitor_session, monkeypatch):
     resp = visitor_session.post("/request", data={"appid": "70", "next": "/"}, follow_redirects=True)
     assert b"already been requested" in resp.data
     assert len(db.list_requests()) == 1
+
+
+def test_request_refuses_an_appid_the_scanner_has_already_matched(visitor_session, monkeypatch):
+    import db
+    monkeypatch.setattr(app_module.scanner, "matched_appids", lambda: {70})
+
+    resp = visitor_session.post("/request", data={"appid": "70", "next": "/"}, follow_redirects=True)
+    assert b"already installed" in resp.data
+    assert db.list_requests() == []
 
 
 def test_request_rejects_unresolvable_appid(visitor_session, monkeypatch):
@@ -200,6 +225,63 @@ def test_admin_delete_requires_login(client):
     assert resp.status_code == 302
     assert "/admin/login" in resp.headers["Location"]
     assert db.get_request(rid) is not None
+
+
+# ---------------------------------------------------------------------------
+# Games-folder scanner admin routes
+# ---------------------------------------------------------------------------
+def test_admin_scanner_404s_when_not_configured(admin_client):
+    assert admin_client.get("/admin/scanner").status_code == 404
+    assert admin_client.post("/admin/scanner/scan").status_code == 404
+    assert admin_client.post("/admin/scanner/1/confirm").status_code == 404
+
+
+def test_admin_scanner_requires_login(client, monkeypatch, tmp_path):
+    import config as config_module
+    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+    resp = client.get("/admin/scanner")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+
+
+def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, monkeypatch, tmp_path):
+    import config as config_module
+    import db
+    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+    db.upsert_scanned_folder("Half Life 2", "pending_review",
+                              candidate_appid=220, candidate_name="Half-Life 2", candidate_score=91.0)
+    db.upsert_scanned_folder("Mystery Game", "unmatched")
+
+    resp = admin_client.get("/admin/scanner")
+    assert resp.status_code == 200
+    assert b"Half Life 2" in resp.data
+    assert b"Mystery Game" in resp.data
+
+
+def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):
+    import config as config_module
+    import scanner
+    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+    monkeypatch.setattr(scanner, "scan_once",
+                         lambda: {"scanned": 1, "matched": 1, "pending_review": 0, "unmatched": 0})
+
+    resp = admin_client.post("/admin/scanner/scan", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Scanned 1 folder" in resp.data
+
+
+def test_admin_scanner_confirm_flashes_the_scanner_error_on_refusal(admin_client, monkeypatch, tmp_path):
+    import config as config_module
+    import scanner
+    monkeypatch.setattr(config_module, "GAMES_FOLDER", str(tmp_path))
+
+    def boom(row_id, appid):
+        raise scanner.ScannerError("That folder is gone.")
+    monkeypatch.setattr(scanner, "confirm_match", boom)
+
+    resp = admin_client.post("/admin/scanner/1/confirm", data={"appid": "220"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"That folder is gone." in resp.data
 
 
 def test_csrf_protection_rejects_missing_token(isolated_db):

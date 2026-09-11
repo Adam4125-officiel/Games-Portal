@@ -15,11 +15,13 @@ same server, same house style — separate repo).
   same Jellyfin your media server already runs) so a request is always attributable
   to someone; search itself needs no sign-in.
 - **Admin panel**: review requests, change their status (pending → approved →
-  downloading → done, or rejected), leave a note. Password-protected, same pattern
-  as status-portal's `/admin`.
-- **Auto-detection** *(not built yet — see `ROADMAP.md`)*: a background scan of a
-  configured games folder — one subfolder per installed game — will flag requests
-  that are already present, so they don't get asked for twice.
+  downloading → done, or rejected), leave a note, or delete a request outright.
+  Password-protected, same pattern as status-portal's `/admin`.
+- **My requests**: a signed-in visitor can see their own request history and
+  current statuses at `/my-requests` - scoped to their own data only.
+- **Auto-detection**: a background scan of a configured games folder — one
+  subfolder per installed game — recognizes what's already installed, so it's
+  never re-requested. See "Games-folder scanner" below.
 
 ## Running it
 
@@ -54,6 +56,26 @@ unconditionally - verified directly against `jellyfin/jellyfin`'s own source at
 tag `v12.0` (`AuthorizationContext.cs`), not just its release notes. Proven with
 a real local stand-in server that enforces 12.0's rule, not just a mocked one -
 see `tests/test_jellyfin_12_compat.py`.
+
+## Games-folder scanner
+
+Set `PORTAL_GAMES_FOLDER` (a root folder, one subfolder per installed game) to
+enable it - same idea as Sonarr/Radarr's library scan. Matching, in order:
+
+1. **A tag already in the folder name.** This app tags a folder as
+   `{steamapp-<appid>}` anywhere in its name, e.g. `Half-Life 2 {steamapp-220}`
+   - curly braces because they're filesystem-safe on Windows/Linux/macOS, and
+   deliberately echoing Sonarr's own real `{tvdb-<id>}` convention. A tagged
+   folder is recognized instantly, no network call needed.
+2. **A fuzzy match against Steam's catalog** for anything untagged. Never
+   auto-accepted - a confident guess (`PORTAL_SCAN_FUZZY_MATCH_THRESHOLD`,
+   default 82) shows up under `/admin/scanner` as "awaiting review" for the
+   admin to confirm or correct. Confirming it (whichever way it was found)
+   renames the folder on disk to add the tag, so the next scan recognizes it
+   directly instead of fuzzy-matching it again.
+
+Once a game is recognized, the search page shows an "installed" badge instead
+of a Request button, and a duplicate request for it is refused.
 
 ## Visual style
 
