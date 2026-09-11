@@ -200,6 +200,8 @@ change touches anything color-related.
     static/css/style.css    # design tokens + layout, carried over from status-portal
     static/js/theme.js      # light/dark toggle
     static/js/admin_confirm.js  # confirm() guard on any button[data-confirm]
+    static/js/scroll_restore.js # restores scroll position after a refresh/redirect
+    static/js/rail_scroll.js    # arrow-scroll for horizontal rails (Recently added, Collections)
     templates/                  # admin_base.html holds the shared admin nav shell
     tests/                   # pytest — db.py, steam.py, jellyfin_auth.py, updater.py, scanner.py, app.py routes
     instance/                # portal.db + secret_key + update_backups/ + db_backups/, gitignored
