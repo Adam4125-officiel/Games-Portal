@@ -182,3 +182,16 @@ SCAN_INTERVAL_SECONDS = int(os.environ.get("PORTAL_SCAN_INTERVAL_SECONDS", "3600
 # auto-resolve. Below this, a folder is left unmatched rather than nagging the
 # admin with a low-confidence guess every scan.
 SCAN_FUZZY_MATCH_THRESHOLD = int(os.environ.get("PORTAL_SCAN_FUZZY_MATCH_THRESHOLD", "82"))
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Blank (the default) means "let the entry point decide" - app.py (the dev
+# server) defaults to INFO, serve_waitress.py (production) defaults to
+# WARNING, since a production log shouldn't be as chatty as a dev session's
+# by default. Set explicitly to override either one, e.g. INFO in production
+# while troubleshooting something. Invalid values are ignored (fall back to
+# the entry point's own default) rather than crashing startup over a typo.
+_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+_raw_log_level = os.environ.get("PORTAL_LOG_LEVEL", "").strip().upper()
+LOG_LEVEL = _raw_log_level if _raw_log_level in _VALID_LOG_LEVELS else ""

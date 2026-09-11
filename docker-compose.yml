@@ -31,6 +31,7 @@ services:
       - PORTAL_GAMES_FOLDER=${PORTAL_GAMES_FOLDER:-/games}
       - PORTAL_SCAN_INTERVAL_SECONDS=${PORTAL_SCAN_INTERVAL_SECONDS:-3600}
       - PORTAL_SCAN_FUZZY_MATCH_THRESHOLD=${PORTAL_SCAN_FUZZY_MATCH_THRESHOLD:-82}
+      - PORTAL_LOG_LEVEL=${PORTAL_LOG_LEVEL:-}
     volumes:
       - portal_data:/app/instance
       # Bind-mounted, unlike instance/'s named volume, since this points at a

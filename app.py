@@ -24,8 +24,13 @@ import scanner
 import steam
 import updater
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Deliberately NOT configured here (no logging.basicConfig() at import time) -
+# this module is imported by both app.py's own __main__ block (dev) and
+# serve_waitress.py (production, via `from app import app`), and the two want
+# different default verbosity. Each entry point configures logging itself,
+# before doing anything else, in its own __main__ block.
 _logger = logging.getLogger(__name__)
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
@@ -871,6 +876,7 @@ def _restart_process():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=config.LOG_LEVEL or "INFO", format=LOG_FORMAT)
     db.init_db()
     # If the previous shutdown was an in-app update restarting into a new
     # version, this is where that gets confirmed (or reported as not having
