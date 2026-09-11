@@ -6,6 +6,20 @@ import scanner
 import steam
 
 
+def _configure_folders(raw_text):
+    """Test helper: replaces every configured folder with the ones in
+    `raw_text` (newline-separated, blank lines dropped) - mirrors what the
+    admin UI's per-folder add/remove now does (db.add_games_folder /
+    db.delete_games_folder), without each test having to track individual
+    folder ids."""
+    for row in db.list_games_folders():
+        db.delete_games_folder(row["id"])
+    for line in raw_text.splitlines():
+        path = line.strip()
+        if path:
+            db.add_games_folder(path)
+
+
 # ---------------------------------------------------------------------------
 # Tag handling
 # ---------------------------------------------------------------------------
@@ -35,10 +49,39 @@ def test_clean_for_search_strips_brackets_and_separators():
 # ---------------------------------------------------------------------------
 # Settings (DB-backed, admin-edited from /admin/scanner - see app.py)
 # ---------------------------------------------------------------------------
-def test_games_folders_round_trips_and_cleans_input(isolated_db):
-    scanner.set_games_folders("  /mnt/games \n\n/mnt/games2\n \n/mnt/games\n")
-    # Blank lines dropped, whitespace trimmed, duplicates removed, order kept.
-    assert scanner.games_folders() == ["/mnt/games", "/mnt/games2"]
+def test_games_folders_reflects_the_configured_table(isolated_db):
+    db.add_games_folder("/mnt/games")
+    db.add_games_folder("/mnt/games2")
+    assert sorted(scanner.games_folders()) == ["/mnt/games", "/mnt/games2"]
+
+
+def test_add_games_folder_refuses_a_duplicate_path(isolated_db):
+    assert db.add_games_folder("/mnt/games") is not None
+    assert db.add_games_folder("/mnt/games") is None  # already configured
+    assert scanner.games_folders() == ["/mnt/games"]
+
+
+def test_client_path_for_falls_back_to_the_server_path(isolated_db):
+    db.add_games_folder("/mnt/games", label="Main", client_path="")
+    assert scanner.client_path_for("/mnt/games") == "/mnt/games"
+    assert scanner.client_path_for("/not/configured") is None
+
+
+def test_client_path_for_prefers_the_admin_entered_client_path(isolated_db):
+    db.add_games_folder("D:\\Games", label="Main", client_path="\\\\HOMESERVER\\Games")
+    assert scanner.client_path_for("D:\\Games") == "\\\\HOMESERVER\\Games"
+
+
+def test_display_path_for_game_joins_client_root_and_folder_name(isolated_db):
+    db.add_games_folder("/mnt/games", client_path="/srv/games")
+    path = scanner.display_path_for_game("/mnt/games", "Half-Life 2 {steamapp-220}")
+    assert path == "/srv/games/Half-Life 2"  # tag stripped for display
+
+
+def test_display_path_for_game_uses_backslashes_for_a_windows_style_root(isolated_db):
+    db.add_games_folder("D:\\Games", client_path="\\\\HOMESERVER\\Games")
+    path = scanner.display_path_for_game("D:\\Games", "Portal 2 {steamapp-620}")
+    assert path == "\\\\HOMESERVER\\Games\\Portal 2"
 
 
 def test_disabled_scanner_is_a_no_op(isolated_db):
@@ -69,7 +112,7 @@ def test_scan_interval_has_a_floor(isolated_db):
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def one_root(tmp_path, isolated_db):
-    scanner.set_games_folders(str(tmp_path))
+    _configure_folders(str(tmp_path))
     return tmp_path
 
 
@@ -164,7 +207,7 @@ def test_a_steam_failure_leaves_an_existing_folders_state_unchanged(one_root, mo
 
 def test_an_unreadable_root_does_not_touch_its_existing_rows(isolated_db):
     db.upsert_scanned_folder("/does/not/exist", "Some Game", "matched", steam_appid=70)
-    scanner.set_games_folders("/does/not/exist")
+    _configure_folders("/does/not/exist")
 
     result = scanner.scan_once()
     assert result["errors"]
@@ -190,6 +233,38 @@ def test_matched_appids_reflects_only_matched_rows(one_root, monkeypatch):
     assert scanner.matched_appids() == {220, 620}
 
 
+def test_matched_at_is_stamped_once_and_preserved_on_later_scans(one_root, monkeypatch):
+    """Powers the public "Recently added" strip - matched_at must reflect
+    when a game was *first* matched, not the most recent scan, or a folder
+    that never changes would keep jumping back to the top of "recently
+    added" every single scan cycle."""
+    (one_root / "Half-Life 2 {steamapp-220}").mkdir()
+    scanner.scan_once()
+    first_matched_at = db.list_scanned_folders(status="matched")[0]["matched_at"]
+    assert first_matched_at is not None
+
+    scanner.scan_once()  # nothing changed on disk
+    second_matched_at = db.list_scanned_folders(status="matched")[0]["matched_at"]
+    assert second_matched_at == first_matched_at
+
+
+def test_recently_matched_games_returns_newest_first(one_root, monkeypatch):
+    # now_iso() has second-level precision, and each scan calls it more than
+    # once - two scans in the same test could otherwise land in the same
+    # second and make the ordering ambiguous. A strictly increasing fake
+    # sidesteps that without caring how many times it's called.
+    counter = iter(range(1, 1000))
+    monkeypatch.setattr(db, "now_iso", lambda: f"2026-01-01T00:{next(counter):03d}:00+00:00")
+
+    (one_root / "Half-Life 2 {steamapp-220}").mkdir()
+    scanner.scan_once()
+    (one_root / "Portal 2 {steamapp-620}").mkdir()
+    scanner.scan_once()
+
+    recent = db.recently_matched_games(limit=8)
+    assert [r["steam_appid"] for r in recent] == [620, 220]
+
+
 # ---------------------------------------------------------------------------
 # Multiple root folders (e.g. one per disk)
 # ---------------------------------------------------------------------------
@@ -198,7 +273,7 @@ def test_two_roots_can_each_have_a_same_named_folder(tmp_path, isolated_db, monk
     root2 = tmp_path / "disk2"
     (root1 / "Portal {steamapp-400}").mkdir(parents=True)
     (root2 / "Portal {steamapp-400}").mkdir(parents=True)  # same folder name, different disk
-    scanner.set_games_folders(f"{root1}\n{root2}")
+    _configure_folders(f"{root1}\n{root2}")
 
     result = scanner.scan_once()
     assert result["scanned"] == 2
@@ -211,7 +286,7 @@ def test_one_unreadable_root_does_not_block_scanning_the_others(tmp_path, isolat
     good_root = tmp_path / "disk1"
     bad_root = tmp_path / "does-not-exist"
     (good_root / "Half-Life 2 {steamapp-220}").mkdir(parents=True)
-    scanner.set_games_folders(f"{good_root}\n{bad_root}")
+    _configure_folders(f"{good_root}\n{bad_root}")
 
     result = scanner.scan_once()
     assert result["matched"] == 1
@@ -225,13 +300,13 @@ def test_removing_a_root_from_config_prunes_its_rows(tmp_path, isolated_db, monk
     root2 = tmp_path / "disk2"
     (root1 / "Half-Life 2 {steamapp-220}").mkdir(parents=True)
     (root2 / "Portal 2 {steamapp-620}").mkdir(parents=True)
-    scanner.set_games_folders(f"{root1}\n{root2}")
+    _configure_folders(f"{root1}\n{root2}")
     scanner.scan_once()
     assert len(db.list_scanned_folders()) == 2
 
     # Admin removes disk2 from the configured list entirely (not "disk unplugged" -
     # a deliberate configuration change, safe to prune even without re-listing it).
-    scanner.set_games_folders(str(root1))
+    _configure_folders(str(root1))
     scanner.scan_once()
     rows = db.list_scanned_folders()
     assert len(rows) == 1
@@ -309,7 +384,7 @@ def test_confirm_match_refuses_a_folder_name_that_escapes_its_root(one_root, mon
 
 def test_confirm_match_refuses_a_root_no_longer_configured(unmatched_folder, monkeypatch):
     root, row_id = unmatched_folder
-    scanner.set_games_folders("")  # admin removed every configured folder
+    _configure_folders("")  # admin removed every configured folder
     monkeypatch.setattr(steam, "fetch_app_summary",
                          lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": ""})
 

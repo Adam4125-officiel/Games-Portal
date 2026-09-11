@@ -18,30 +18,73 @@
   <div class="panel">
     <h2>Games folders</h2>
     <p class="dim">
-      One folder per line - each subfolder inside is treated as one installed game. Add one
-      entry per disk if your library is split across drives; each is scanned independently, so
-      one being unplugged never affects the others.
+      Each subfolder inside is treated as one installed game. Add one entry per disk if your
+      library is split across drives; each is scanned independently, so one being unplugged
+      never affects the others.
     </p>
-    {% if games_folders %}
-      <table class="info-table">
-        {% for f in games_folders %}
-          <tr>
-            <th>{{ '✓' if folder_exists[f] else '✗' }}</th>
-            <td><code>{{ f }}</code>{% if not folder_exists[f] %}
-              <span class="dim"> - not found right now (disk unplugged? typo?)</span>{% endif %}</td>
-          </tr>
+    <p class="dim">
+      <strong>Client path</strong> is what a visitor is told on <a href="{{ url_for('collections') }}">Collections</a>
+      when they ask "where is it?" - not necessarily the same as the path below, which is this
+      server's own. A server-side <code>D:\Games</code> might be <code>\\HOMESERVER\Games</code>
+      or a different mapped drive letter for everyone else on the network. Left blank, the
+      server's own path is shown instead - correct, but possibly not what a visitor should type.
+    </p>
+
+    {% if folders %}
+      <div class="request-list">
+        {% for f in folders %}
+          <div class="request-row">
+            <div class="request-row__body">
+              <div class="request-row__title">
+                {{ f.label or f.path }}
+                <span class="badge {{ 'done' if f.exists else 'rejected' }}">{{ 'found' if f.exists else 'not found' }}</span>
+              </div>
+              <p class="request-row__meta">Server path: <code>{{ f.path }}</code></p>
+            </div>
+            <form class="request-row__form" method="POST"
+                  action="{{ url_for('admin_scanner_update_folder', folder_id=f.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="label" placeholder="Label (optional)" value="{{ f.label }}">
+              <input type="text" name="client_path" placeholder="Client path (optional)" value="{{ f.client_path }}">
+              <button type="submit" class="btn small">Save</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_scanner_delete_folder', folder_id=f.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn small danger"
+                      data-confirm="Remove &quot;{{ f.label or f.path }}&quot; from the scanner? Games already matched under it will stop being recognized as installed.">Remove</button>
+            </form>
+          </div>
         {% endfor %}
-      </table>
+      </div>
     {% else %}
       <p class="empty-state">No games folders configured yet - add at least one below.</p>
     {% endif %}
-    <form method="POST" action="{{ url_for('admin_scanner_settings') }}">
+
+    <h3 class="panel__subhead">Add a folder</h3>
+    <form method="POST" action="{{ url_for('admin_scanner_add_folder') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
-        <label for="games_folders">Folders (one per line)</label>
-        <textarea name="games_folders" id="games_folders" rows="4"
-                  placeholder="/mnt/games&#10;D:\Games&#10;E:\MoreGames">{{ games_folders_text }}</textarea>
+        <label for="path">Server path</label>
+        <input type="text" name="path" id="path" placeholder="/mnt/games or D:\Games" required>
       </div>
+      <div class="field">
+        <label for="new_label">Label (optional)</label>
+        <input type="text" name="label" id="new_label" placeholder="Main games drive">
+      </div>
+      <div class="field">
+        <label for="new_client_path">Client path (optional)</label>
+        <input type="text" name="client_path" id="new_client_path" placeholder="\\HOMESERVER\Games">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Add folder</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Scan settings</h2>
+    <form method="POST" action="{{ url_for('admin_scanner_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
         <label for="scan_interval_minutes">Scan every (minutes)</label>
         <input type="number" min="1" name="scan_interval_minutes" id="scan_interval_minutes"

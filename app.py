@@ -303,8 +303,26 @@ def _safe_next_url(raw):
 
 
 # ---------------------------------------------------------------------------
-# Public: search + request
+# Public: search + request + collections
 # ---------------------------------------------------------------------------
+def _matched_games_by_appid():
+    """steam_appid -> matched installed_games row, with a computed
+    display_path (see scanner.display_path_for_game) attached - shared by the
+    search page's "available" badge and /collections, so a game's client-
+    facing path is computed the same way in both places. A local SQLite read
+    (db.list_scanned_folders), not network I/O, so calling it inline in a
+    request handler is the same class of call db.active_request_appids()
+    already is here."""
+    result = {}
+    for row in db.list_scanned_folders(status="matched"):
+        appid = row["steam_appid"]
+        if appid is None:
+            continue
+        row["display_path"] = scanner.display_path_for_game(row["root_path"], row["folder_name"])
+        result[appid] = row
+    return result
+
+
 def _search_rate_limited():
     now = time.time()
     window_start = session.get("search_window_start", 0)
@@ -334,11 +352,23 @@ def index():
                 search_error = "Steam search is unavailable right now. Please try again shortly."
 
     existing = db.active_request_appids([r["appid"] for r in results])
-    installed = scanner.matched_appids()
+    matched_by_appid = _matched_games_by_appid()
     for r in results:
-        r["existing_status"] = existing.get(r["appid"]) or ("installed" if r["appid"] in installed else None)
+        matched = matched_by_appid.get(r["appid"])
+        r["existing_status"] = existing.get(r["appid"]) or ("available" if matched else None)
+        r["display_path"] = matched["display_path"] if matched else None
 
-    return render_template("index.html", query=query, results=results, search_error=search_error)
+    # Only on the plain landing view, not alongside actual search results -
+    # a "here's what's already here" teaser belongs on arrival, not repeated
+    # underneath every Steam search.
+    recent = [] if query else db.recently_matched_games(limit=8)
+    for g in recent:
+        if not g["name"]:
+            g["name"] = scanner.strip_tag(g["folder_name"])
+        g["display_path"] = scanner.display_path_for_game(g["root_path"], g["folder_name"])
+
+    return render_template("index.html", query=query, results=results, search_error=search_error,
+                            recent=recent)
 
 
 @app.route("/request", methods=["POST"])
@@ -369,6 +399,20 @@ def submit_request():
                        summary["short_description"], user["id"], user["name"])
     flash(f'Requested "{summary["name"]}".', "success")
     return redirect(next_url)
+
+
+@app.route("/collections")
+def collections():
+    """Every game the scanner currently recognizes as installed - public,
+    read-only, no sign-in needed, same as search itself (only *requesting*
+    needs a Jellyfin sign-in). A local DB read, not network I/O - see
+    _matched_games_by_appid()'s own docstring."""
+    games = list(_matched_games_by_appid().values())
+    for g in games:
+        if not g["name"]:
+            g["name"] = scanner.strip_tag(g["folder_name"])
+    games.sort(key=lambda g: g["name"].lower())
+    return render_template("collections.html", games=games)
 
 
 @app.route("/my-requests")
@@ -523,15 +567,15 @@ def admin_delete_request(request_id):
 @app.route("/admin/scanner")
 @login_required
 def admin_scanner():
-    folders = scanner.games_folders()
+    folders = db.list_games_folders()
+    for f in folders:
+        f["exists"] = scanner.folder_exists(f["path"])
     return render_template(
         "admin_scanner.html", active="scanner",
         pending=db.list_scanned_folders(status="pending_review"),
         unmatched=db.list_scanned_folders(status="unmatched"),
         matched_count=len(db.list_scanned_folders(status="matched")),
-        games_folders=folders,
-        games_folders_text="\n".join(folders),
-        folder_exists={f: scanner.folder_exists(f) for f in folders},
+        folders=folders,
         multiple_roots=len(folders) > 1,
         scan_interval_minutes=db.get_setting(
             scanner.SCAN_INTERVAL_MINUTES_SETTING, str(scanner.DEFAULT_SCAN_INTERVAL_MINUTES)),
@@ -542,8 +586,6 @@ def admin_scanner():
 @app.route("/admin/scanner/settings", methods=["POST"])
 @login_required
 def admin_scanner_settings():
-    scanner.set_games_folders(request.form.get("games_folders", ""))
-
     interval_raw = request.form.get("scan_interval_minutes", "")
     if interval_raw.isdigit() and int(interval_raw) > 0:
         scanner.set_scan_interval_minutes(int(interval_raw))
@@ -553,6 +595,45 @@ def admin_scanner_settings():
         scanner.set_fuzzy_match_threshold(int(threshold_raw))
 
     flash("Scanner settings saved.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/add", methods=["POST"])
+@login_required
+def admin_scanner_add_folder():
+    path = request.form.get("path", "").strip()
+    label = request.form.get("label", "").strip()
+    client_path = request.form.get("client_path", "").strip()
+    if not path:
+        flash("Enter a folder path.", "error")
+        return redirect(url_for("admin_scanner"))
+    folder_id = db.add_games_folder(path, label, client_path)
+    if folder_id is None:
+        flash(f'"{path}" is already configured.', "error")
+    else:
+        flash(f'Added "{path}".', "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/<int:folder_id>/update", methods=["POST"])
+@login_required
+def admin_scanner_update_folder(folder_id):
+    if db.get_games_folder(folder_id) is None:
+        abort(404)
+    label = request.form.get("label", "").strip()
+    client_path = request.form.get("client_path", "").strip()
+    db.update_games_folder(folder_id, label, client_path)
+    flash("Folder updated.", "success")
+    return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/folders/<int:folder_id>/delete", methods=["POST"])
+@login_required
+def admin_scanner_delete_folder(folder_id):
+    if db.get_games_folder(folder_id) is None:
+        abort(404)
+    db.delete_games_folder(folder_id)
+    flash("Folder removed. Its previously-scanned entries will be cleared on the next scan.", "success")
     return redirect(url_for("admin_scanner"))
 
 

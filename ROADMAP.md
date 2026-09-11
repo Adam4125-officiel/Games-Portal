@@ -68,3 +68,10 @@ works.
 - Search is a full page reload (`GET /?q=...`), not live/incremental like
   status-portal's search-as-you-type. Simpler and avoids turning every keystroke
   into a Steam API call, but worth revisiting for UX if it feels slow in practice.
+- Free disk space shown per configured games folder on `/admin/scanner` (a cheap
+  `shutil.disk_usage` call) - helps judge whether to approve a request before it
+  fills the drive.
+- A pending-request count badge on the admin nav ("Requests · 3") so it's visible
+  without opening the page.
+- A "surprise me" button on `/collections` - picks something random from what's
+  already installed.

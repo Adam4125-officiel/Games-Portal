@@ -265,7 +265,31 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   -webkit-box-orient: vertical;
 }
 
-.result-card__actions { flex-shrink: 0; }
+.result-card__actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.section-heading {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  margin: 24px 0 12px;
+}
+
+/* A native <details> disclosure - no JS needed to show/hide it. Kept small
+   and unobtrusive since it sits inside a compact result card. */
+.path-disclosure { font-size: 0.78rem; }
+.path-disclosure summary { color: var(--text-dim); cursor: pointer; text-align: right; }
+.path-disclosure summary:hover { color: var(--text-primary); }
+.path-disclosure code {
+  display: block;
+  margin-top: 4px;
+  word-break: break-all;
+  color: var(--text-dim);
+}
 
 /* ---------- Status badges ---------- */
 .badge {
@@ -283,7 +307,7 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
 .badge.downloading { background: var(--maint-dim); color: var(--maint); }
 .badge.done { background: var(--ok-dim); color: var(--ok); }
 .badge.rejected { background: var(--crit-dim); color: var(--crit); }
-.badge.installed { background: var(--ok-dim); color: var(--ok); }
+.badge.available { background: var(--ok-dim); color: var(--ok); }
 .badge.warn { background: var(--warn-dim); color: var(--warn); text-transform: none; }
 .badge.maint { background: var(--maint-dim); color: var(--maint); text-transform: none; }
 

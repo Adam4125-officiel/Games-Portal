@@ -38,7 +38,7 @@ def test_search_degrades_gracefully_on_steam_failure(client, monkeypatch):
     assert resp.status_code == 200
 
 
-def test_search_shows_installed_badge_instead_of_a_request_button(client, monkeypatch):
+def test_search_shows_available_badge_instead_of_a_request_button(client, monkeypatch):
     import db
     import steam
 
@@ -47,11 +47,13 @@ def test_search_shows_installed_badge_instead_of_a_request_button(client, monkey
 
     monkeypatch.setattr(steam, "search", fake_search)
     monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
-    monkeypatch.setattr(app_module.scanner, "matched_appids", lambda: {220})
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2")
 
     resp = client.get("/?q=half-life")
     assert resp.status_code == 200
-    assert b'class="badge installed"' in resp.data
+    assert b'class="badge available"' in resp.data
     assert b'name="appid" value="220"' not in resp.data  # no Request form rendered
 
 
@@ -109,6 +111,53 @@ def test_request_rejects_unresolvable_appid(visitor_session, monkeypatch):
 
     resp = visitor_session.post("/request", data={"appid": "999999999", "next": "/"}, follow_redirects=True)
     assert b"Could not look up" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Collections (public, read-only, no sign-in - same as search itself) and the
+# "Recently added" strip on the search page
+# ---------------------------------------------------------------------------
+def test_collections_requires_no_login(client):
+    resp = client.get("/collections")
+    assert resp.status_code == 200
+    assert b"Nothing recognized as installed yet" in resp.data
+
+
+def test_collections_shows_matched_games_with_pictures(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2", icon_url="http://img/220.jpg",
+                              short_description="A classic.")
+    resp = client.get("/collections")
+    assert resp.status_code == 200
+    assert b"Half-Life 2" in resp.data
+    assert b'src="http://img/220.jpg"' in resp.data
+    assert b'class="badge available"' in resp.data
+
+
+def test_collections_falls_back_to_the_folder_name_when_steam_details_are_missing(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Some Game {steamapp-999}", "matched", steam_appid=999)
+    resp = client.get("/collections")
+    assert b"Some Game" in resp.data
+
+
+def test_index_shows_recently_added_only_without_an_active_search(client, monkeypatch):
+    import db
+    import steam
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2", matched_at=db.now_iso())
+
+    resp = client.get("/")
+    assert b"Recently added" in resp.data
+    assert b"Half-Life 2" in resp.data
+
+    monkeypatch.setattr(steam, "search", lambda term: [])
+    resp = client.get("/?q=portal")
+    assert b"Recently added" not in resp.data
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +310,7 @@ def test_admin_scanner_nav_link_is_always_shown(admin_client):
 
 def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, tmp_path):
     import db
-    import scanner
-    scanner.set_games_folders(str(tmp_path))
+    db.add_games_folder(str(tmp_path))
     db.upsert_scanned_folder(str(tmp_path), "Half Life 2", "pending_review",
                               candidate_appid=220, candidate_name="Half-Life 2", candidate_score=91.0)
     db.upsert_scanned_folder(str(tmp_path), "Mystery Game", "unmatched")
@@ -273,22 +321,60 @@ def test_admin_scanner_page_lists_pending_and_unmatched(admin_client, tmp_path):
     assert b"Mystery Game" in resp.data
 
 
-def test_admin_scanner_settings_saves_folders_interval_and_threshold(admin_client):
+def test_admin_scanner_add_folder(admin_client):
+    import scanner
+    resp = admin_client.post("/admin/scanner/folders/add", data={
+        "path": "/mnt/games", "label": "Main", "client_path": "\\\\HOMESERVER\\Games",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    assert scanner.games_folders() == ["/mnt/games"]
+    assert scanner.client_path_for("/mnt/games") == "\\\\HOMESERVER\\Games"
+
+
+def test_admin_scanner_add_folder_refuses_a_duplicate(admin_client):
+    import db
+    db.add_games_folder("/mnt/games")
+    resp = admin_client.post("/admin/scanner/folders/add", data={"path": "/mnt/games"},
+                              follow_redirects=True)
+    assert b"already configured" in resp.data
+
+
+def test_admin_scanner_update_folder(admin_client):
+    import db
+    folder_id = db.add_games_folder("/mnt/games")
+    resp = admin_client.post(f"/admin/scanner/folders/{folder_id}/update",
+                              data={"label": "Main Drive", "client_path": "Z:\\"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    row = db.get_games_folder(folder_id)
+    assert row["label"] == "Main Drive"
+    assert row["client_path"] == "Z:\\"
+
+
+def test_admin_scanner_delete_folder(admin_client):
+    import db
+    import scanner
+    folder_id = db.add_games_folder("/mnt/games")
+    resp = admin_client.post(f"/admin/scanner/folders/{folder_id}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert scanner.games_folders() == []
+
+
+def test_admin_scanner_settings_saves_interval_and_threshold(admin_client):
     import scanner
     resp = admin_client.post("/admin/scanner/settings", data={
-        "games_folders": "/mnt/games\n/mnt/games2",
         "scan_interval_minutes": "15",
         "fuzzy_match_threshold": "90",
     }, follow_redirects=True)
     assert resp.status_code == 200
-    assert scanner.games_folders() == ["/mnt/games", "/mnt/games2"]
     assert scanner.scan_interval_seconds() == 15 * 60
     assert scanner.fuzzy_match_threshold() == 90
 
 
 def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):
+    import db
     import scanner
-    scanner.set_games_folders(str(tmp_path))
+    db.add_games_folder(str(tmp_path))
     monkeypatch.setattr(scanner, "scan_once",
                          lambda: {"scanned": 1, "matched": 1, "pending_review": 0, "unmatched": 0})
 

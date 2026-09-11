@@ -19,9 +19,15 @@ same server, same house style — separate repo).
   Password-protected, same pattern as status-portal's `/admin`.
 - **My requests**: a signed-in visitor can see their own request history and
   current statuses at `/my-requests` - scoped to their own data only.
-- **Auto-detection**: a background scan of a configured games folder — one
-  subfolder per installed game — recognizes what's already installed, so it's
-  never re-requested. See "Games-folder scanner" below.
+- **Auto-detection**: a background scan of one or more configured games folders
+  — one subfolder per installed game — recognizes what's already installed, so
+  it's never re-requested. Configured entirely from the admin UI. See
+  "Games-folder scanner" below.
+- **Collections** (`/collections`): a public, browsable, filterable list of
+  every game the scanner has recognized, pictures included - no sign-in
+  needed, same as search itself.
+- **Recently added**: the search page's landing view (no active search) shows
+  the most recently recognized games right under the search bar.
 
 ## Running it
 
@@ -78,8 +84,17 @@ fuzzy-match confidence threshold, all editable live. Matching, in order:
    disk to add the tag, so the next scan recognizes it directly instead of
    fuzzy-matching it again.
 
-Once a game is recognized, the search page shows an "installed" badge instead
-of a Request button, and a duplicate request for it is refused.
+Each configured folder also has an optional **label** and **client path**.
+The client path is what a *visitor* is told when they ask "where is it?" on
+Collections or the search page - not necessarily the server's own path. A
+server scanning `D:\Games` might be reachable to everyone else on the network
+as `\\HOMESERVER\Games` or a different mapped drive letter entirely; left
+blank, the server's own path is shown as a fallback.
+
+Once a game is recognized, the search page shows an "available" badge instead
+of a Request button (with a "Where is it?" disclosure revealing the
+client-facing path), a duplicate request for it is refused, and it shows up
+on `/collections` and in the "Recently added" strip on the search page.
 
 Under Docker, a folder still needs to be bind-mounted into the container
 first (see `docker-compose.yml`'s comments, including how to add more than

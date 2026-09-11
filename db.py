@@ -188,6 +188,41 @@ def init_db():
     _ensure_column(conn, "installed_games", "created_at", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "installed_games", "updated_at", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "installed_games", "last_seen_at", "TEXT NOT NULL DEFAULT ''")
+    # Cached Steam details for a matched row, shown on the public /collections
+    # page - fetched once when a folder becomes matched (scanner.py reuses
+    # them on later scans rather than re-fetching from Steam every cycle for
+    # a folder that never changes) and left alone entirely for anything not
+    # yet matched.
+    _ensure_column(conn, "installed_games", "name", "TEXT")
+    _ensure_column(conn, "installed_games", "icon_url", "TEXT")
+    _ensure_column(conn, "installed_games", "short_description", "TEXT")
+    # When this row first became 'matched' - deliberately NOT updated_at,
+    # which every scan touches regardless of whether anything actually
+    # changed. Powers the public "Recently added" strip (see
+    # recently_matched_games() below); scanner.py is responsible for only
+    # ever advancing this on a genuine new match, never on a routine rescan
+    # of something already matched.
+    _ensure_column(conn, "installed_games", "matched_at", "TEXT")
+
+    # Configured root folders (see scanner.py) - one row per folder, admin-
+    # managed from /admin/scanner. `path` is the real, server-side filesystem
+    # path scanner.py actually walks. `client_path`, separately, is what a
+    # *visitor* is told on /collections - the server's own path is frequently
+    # meaningless (or even a bit revealing) to someone else on the network:
+    # the admin might scan `D:\Games` on the server itself, while a visitor
+    # reaches the same share as `\\HOMESERVER\Games` or a totally different
+    # mapped drive letter on their own machine. Left blank, the server path is
+    # shown as a fallback (visible in the admin UI as clearly the server's own
+    # path, not asserted to be what a visitor should type).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS games_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL DEFAULT '',
+            client_path TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -308,11 +343,22 @@ INSTALLED_GAME_STATUSES = ("matched", "pending_review", "unmatched")
 
 
 def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, candidate_appid=None,
-                           candidate_name=None, candidate_score=None):
+                           candidate_name=None, candidate_score=None, name=None, icon_url=None,
+                           short_description=None, matched_at=None):
     """Inserts or updates one folder's row by (root_path, folder_name) - its
     unique key now that more than one root folder can be configured (two
     disks can each have a same-named subfolder). Called once per folder, per
-    scan pass, by scanner.scan_once()."""
+    scan pass, by scanner.scan_once().
+
+    name/icon_url/short_description are the cached Steam details shown on
+    the public /collections page for a matched row - only ever passed for a
+    'matched' status; left NULL (and therefore untouched by this INSERT's
+    own defaults) for pending_review/unmatched rows, which have no confirmed
+    game to describe yet. matched_at is likewise only meaningful for
+    'matched' - the caller (scanner.py) is responsible for resolving it to
+    either a preserved old value (already matched, nothing new) or a fresh
+    timestamp (a genuinely new match), never recomputing it here - this
+    function just stores whatever it's given."""
     if status not in INSTALLED_GAME_STATUSES:
         raise ValueError(f"Unknown installed_games status: {status!r}")
     conn = get_db()
@@ -320,18 +366,23 @@ def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, cand
     conn.execute("""
         INSERT INTO installed_games
             (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
-             candidate_score, created_at, updated_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             candidate_score, name, icon_url, short_description, matched_at,
+             created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(root_path, folder_name) DO UPDATE SET
             steam_appid=excluded.steam_appid,
             status=excluded.status,
             candidate_appid=excluded.candidate_appid,
             candidate_name=excluded.candidate_name,
             candidate_score=excluded.candidate_score,
+            name=excluded.name,
+            icon_url=excluded.icon_url,
+            short_description=excluded.short_description,
+            matched_at=excluded.matched_at,
             updated_at=excluded.updated_at,
             last_seen_at=excluded.last_seen_at
     """, (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
-          candidate_score, ts, ts, ts))
+          candidate_score, name, icon_url, short_description, matched_at, ts, ts, ts))
     conn.commit()
     row = conn.execute("SELECT id FROM installed_games WHERE root_path=? AND folder_name=?",
                         (root_path, folder_name)).fetchone()
@@ -358,23 +409,41 @@ def get_scanned_folder(row_id):
     return dict(row) if row else None
 
 
-def mark_folder_matched(row_id, folder_name, steam_appid):
+def mark_folder_matched(row_id, folder_name, steam_appid, name=None, icon_url=None,
+                         short_description=None, matched_at=None):
     """Called after scanner.confirm_match() successfully renames a folder on
     disk to embed its confirmed AppID tag - updates the row's folder_name
     (root_path never changes; a confirmed match is always renamed in place,
-    never moved between roots) and clears the now-stale fuzzy-candidate
-    fields."""
+    never moved between roots), caches the Steam details shown on
+    /collections, stamps matched_at (see upsert_scanned_folder's docstring -
+    the caller resolves whether this is a preserved or fresh timestamp), and
+    clears the now-stale fuzzy-candidate fields."""
     conn = get_db()
     ts = now_iso()
     conn.execute("""
         UPDATE installed_games
         SET folder_name=?, steam_appid=?, status='matched',
             candidate_appid=NULL, candidate_name=NULL, candidate_score=NULL,
+            name=?, icon_url=?, short_description=?, matched_at=?,
             updated_at=?, last_seen_at=?
         WHERE id=?
-    """, (folder_name, steam_appid, ts, ts, row_id))
+    """, (folder_name, steam_appid, name, icon_url, short_description, matched_at, ts, ts, row_id))
     conn.commit()
     conn.close()
+
+
+def recently_matched_games(limit=8):
+    """The most recently matched games, newest first - powers the public
+    "Recently added" strip on the search page. Only rows with a matched_at
+    stamp are eligible (a row created before that column existed has none
+    yet - it'll get one the next time scanner.py actually re-resolves it,
+    not retroactively)."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM installed_games WHERE status='matched' AND matched_at IS NOT NULL "
+        "ORDER BY matched_at DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 def matched_appids():
@@ -416,4 +485,59 @@ def prune_scanned_folders(configured_roots, scanned_roots, seen_pairs):
         placeholders = ",".join("?" * len(stale_ids))
         conn.execute(f"DELETE FROM installed_games WHERE id IN ({placeholders})", stale_ids)
         conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Configured games folders (see scanner.py). Deleting a folder here doesn't
+# cascade-delete its installed_games rows immediately - the next scan prunes
+# them naturally, the same as a folder that simply stopped being configured
+# (see prune_scanned_folders() above), so there's nothing extra to do here.
+# ---------------------------------------------------------------------------
+def add_games_folder(path, label="", client_path=""):
+    """Returns the new row's id, or None if this path is already configured
+    (its UNIQUE constraint) - the caller reports that as a friendly message
+    rather than a raw IntegrityError."""
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO games_folders (path, label, client_path, created_at) VALUES (?, ?, ?, ?)",
+            (path, label, client_path, now_iso()))
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def list_games_folders():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM games_folders ORDER BY label, path").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_games_folder(folder_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM games_folders WHERE id=?", (folder_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_games_folder(folder_id, label, client_path):
+    """Only label/client_path are editable - path itself is immutable once
+    added (changing what scanner.py actually walks is a big enough change
+    that it should be a remove-and-re-add, not a quiet edit)."""
+    conn = get_db()
+    conn.execute("UPDATE games_folders SET label=?, client_path=? WHERE id=?",
+                 (label, client_path, folder_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_games_folder(folder_id):
+    conn = get_db()
+    conn.execute("DELETE FROM games_folders WHERE id=?", (folder_id,))
+    conn.commit()
     conn.close()

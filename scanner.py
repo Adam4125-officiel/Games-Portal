@@ -7,7 +7,8 @@ Configuration lives entirely in the database, edited from /admin/scanner -
 no .env editing or restart required, unlike this module's first version.
 Multiple root folders are supported (e.g. one per physical disk); each is
 scanned independently, so one being temporarily offline never affects the
-others. See games_folders()/set_games_folders() below.
+others. See db.py's games_folders table (add_games_folder() etc.) and this
+module's games_folders()/client_path_for() below.
 
 Matching strategy, in order:
   1. An AppID already tagged in the folder name (`{steamapp-<id>}` - see
@@ -65,7 +66,6 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # this is a routine admin-tunable toggle, not deploy-time config, per
 # CLAUDE.md's config-split rule.
 # ---------------------------------------------------------------------------
-GAMES_FOLDERS_SETTING = "scanner_games_folders"
 SCAN_INTERVAL_MINUTES_SETTING = "scanner_interval_minutes"
 FUZZY_THRESHOLD_SETTING = "scanner_fuzzy_match_threshold"
 
@@ -80,26 +80,44 @@ class ScannerError(Exception):
 
 
 def games_folders():
-    """Every configured root folder, as a list, newest-edited-wins - stored as
-    one newline-separated DB setting (the same "one text setting, cleaned on
-    save" shape this house style already uses for other admin-entered lists,
-    e.g. status-portal's notification recipient list)."""
-    raw = db.get_setting(GAMES_FOLDERS_SETTING, "")
-    return [line.strip() for line in raw.splitlines() if line.strip()]
+    """Every configured root folder's real, server-side path, as a list -
+    what scanner.scan_once() actually walks. See db.games_folders (the
+    table) for the admin-managed per-folder label/client_path that go with
+    each one; those are looked up separately (client_path_for() below) since
+    scan_once() itself only ever needs the bare paths."""
+    return [row["path"] for row in db.list_games_folders()]
 
 
-def set_games_folders(raw_text):
-    """Cleans admin-entered textarea input (blank lines, stray whitespace,
-    accidental duplicates) into a canonical newline-separated string before
-    saving."""
-    seen = set()
-    deduped = []
-    for line in (raw_text or "").splitlines():
-        folder = line.strip()
-        if folder and folder not in seen:
-            seen.add(folder)
-            deduped.append(folder)
-    db.set_setting(GAMES_FOLDERS_SETTING, "\n".join(deduped))
+def client_path_for(root_path):
+    """The path a *visitor* should be told for this root, for the
+    /collections page - the admin-entered client_path if set, otherwise the
+    server's own path as a fallback (still correct information, just not
+    guaranteed to mean anything on a visitor's own machine - the whole reason
+    client_path exists is that a server-side D:\\Games and a visitor's own
+    \\\\HOMESERVER\\Games or mapped drive letter are frequently not the same
+    string at all). Returns None if this root isn't configured at all any
+    more (a row that existed when a game was scanned but was since removed)."""
+    for row in db.list_games_folders():
+        if row["path"] == root_path:
+            return row["client_path"].strip() or row["path"]
+    return None
+
+
+def display_path_for_game(root_path, folder_name):
+    """The full client-facing path to one installed game - the resolved
+    client-facing root (see client_path_for()) joined with the folder's own
+    name (tag stripped, since that's this app's own bookkeeping, meaningless
+    to a visitor browsing a file share). Join style follows whatever the
+    root itself looks like: a backslash for a Windows-shaped root (a UNC
+    path, or a drive letter like "Z:\\"), a forward slash otherwise. Returns
+    None if the root isn't configured any more."""
+    root = client_path_for(root_path)
+    if root is None:
+        return None
+    name = strip_tag(folder_name)
+    is_windows_style = root.startswith("\\\\") or re.match(r"^[A-Za-z]:", root)
+    separator = "\\" if is_windows_style else "/"
+    return root.rstrip("\\/") + separator + name
 
 
 def scan_interval_seconds():
@@ -189,6 +207,38 @@ def _best_fuzzy_candidate(folder_name):
     return {"appid": best["appid"], "name": best["name"], "score": score}
 
 
+def _cached_or_fetched_details(existing_row, appid):
+    """(name, icon_url, short_description) for a matched appid, shown on the
+    public /collections page. Reused from `existing_row` when it's already
+    cached for this same appid - a tagged folder never changes, so re-
+    fetching its details from Steam every scan cycle would be pure waste (and
+    unlike the fuzzy-match step, there's no confidence question here to
+    re-check). A fetch failure (Steam down, a delisted app) falls back to
+    whatever was already cached rather than blanking it out - a transient
+    outage must not erase a perfectly good cached name/icon."""
+    if existing_row and existing_row.get("steam_appid") == appid and existing_row.get("name"):
+        return existing_row["name"], existing_row["icon_url"], existing_row["short_description"]
+    summary = steam.fetch_app_summary(appid)
+    if summary:
+        return summary["name"], summary["icon_url"], summary["short_description"]
+    if existing_row:
+        return (existing_row.get("name"), existing_row.get("icon_url"),
+                existing_row.get("short_description"))
+    return None, None, None
+
+
+def _resolved_matched_at(existing_row, appid):
+    """The matched_at timestamp to store for this row - preserved from
+    `existing_row` if it was already matched under this exact appid (nothing
+    new happened, so its place in "recently added" shouldn't move), freshly
+    stamped otherwise (this is either a genuinely new match or a different
+    game than what used to be here)."""
+    if (existing_row and existing_row.get("status") == "matched"
+            and existing_row.get("steam_appid") == appid and existing_row.get("matched_at")):
+        return existing_row["matched_at"]
+    return db.now_iso()
+
+
 def scan_once():
     """One full pass over every configured root folder. Returns a summary
     dict; never raises for an ordinary per-folder failure (a Steam timeout
@@ -206,6 +256,10 @@ def scan_once():
     seen_pairs = set()
     scanned_roots = set()
     errors = []
+    # One query, reused per folder below, rather than a lookup per folder -
+    # this is what lets a tagged folder's cached Steam details be reused
+    # instead of re-fetched from Steam every single scan cycle.
+    existing_by_key = {(row["root_path"], row["folder_name"]): row for row in db.list_scanned_folders()}
 
     for root in roots:
         try:
@@ -224,7 +278,12 @@ def scan_once():
             seen_pairs.add((root, folder_name))
             tagged_appid = extract_tagged_appid(folder_name)
             if tagged_appid is not None:
-                db.upsert_scanned_folder(root, folder_name, "matched", steam_appid=tagged_appid)
+                existing = existing_by_key.get((root, folder_name))
+                name, icon_url, short_description = _cached_or_fetched_details(existing, tagged_appid)
+                matched_at = _resolved_matched_at(existing, tagged_appid)
+                db.upsert_scanned_folder(root, folder_name, "matched", steam_appid=tagged_appid,
+                                          name=name, icon_url=icon_url, short_description=short_description,
+                                          matched_at=matched_at)
                 counts["matched"] += 1
                 continue
 
@@ -299,7 +358,9 @@ def confirm_match(row_id, appid):
         except OSError as e:
             raise ScannerError(f"Could not rename the folder: {e}")
 
-    db.mark_folder_matched(row_id, new_name, appid)
+    matched_at = _resolved_matched_at(row, appid)
+    db.mark_folder_matched(row_id, new_name, appid, name=summary["name"], icon_url=summary["icon_url"],
+                            short_description=summary["short_description"], matched_at=matched_at)
     return {"folder_name": new_name, "appid": appid, "name": summary["name"], "root_path": root}
 
 
