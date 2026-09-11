@@ -307,18 +307,19 @@ def _safe_next_url(raw):
 # ---------------------------------------------------------------------------
 def _matched_games_by_appid():
     """steam_appid -> matched installed_games row, with a computed
-    display_path (see scanner.display_path_for_game) attached - shared by the
-    search page's "available" badge and /collections, so a game's client-
-    facing path is computed the same way in both places. A local SQLite read
-    (db.list_scanned_folders), not network I/O, so calling it inline in a
-    request handler is the same class of call db.active_request_appids()
-    already is here."""
+    display_path (see scanner.display_path_for_game) and folder_label
+    attached - shared by the search page's "available" badge and
+    /collections, so a game's client-facing path and disk label are computed
+    the same way in both places. A local SQLite read (db.list_scanned_folders),
+    not network I/O, so calling it inline in a request handler is the same
+    class of call db.active_request_appids() already is here."""
     result = {}
     for row in db.list_scanned_folders(status="matched"):
         appid = row["steam_appid"]
         if appid is None:
             continue
         row["display_path"] = scanner.display_path_for_game(row["root_path"], row["folder_name"])
+        row["folder_label"] = scanner.folder_label_for(row["root_path"])
         result[appid] = row
     return result
 
@@ -353,22 +354,60 @@ def index():
 
     existing = db.active_request_appids([r["appid"] for r in results])
     matched_by_appid = _matched_games_by_appid()
+    blacklisted_by_appid = db.blacklist_map([r["appid"] for r in results])
     for r in results:
+        if r["appid"] in blacklisted_by_appid:
+            r["existing_status"] = "blacklisted"
+            r["blacklist_reason"] = blacklisted_by_appid[r["appid"]]
+            r["display_path"] = None
+            r["folder_label"] = None
+            continue
         matched = matched_by_appid.get(r["appid"])
         r["existing_status"] = existing.get(r["appid"]) or ("available" if matched else None)
         r["display_path"] = matched["display_path"] if matched else None
+        r["folder_label"] = matched["folder_label"] if matched else None
 
     # Only on the plain landing view, not alongside actual search results -
     # a "here's what's already here" teaser belongs on arrival, not repeated
     # underneath every Steam search.
-    recent = [] if query else db.recently_matched_games(limit=8)
+    recent = [] if query else db.recently_matched_games(limit=scanner.recently_added_count())
     for g in recent:
         if not g["name"]:
             g["name"] = scanner.strip_tag(g["folder_name"])
         g["display_path"] = scanner.display_path_for_game(g["root_path"], g["folder_name"])
+        g["folder_label"] = scanner.folder_label_for(g["root_path"])
 
     return render_template("index.html", query=query, results=results, search_error=search_error,
                             recent=recent)
+
+
+REQUEST_LIMIT_PERIOD_LABELS = {"daily": "day", "weekly": "week", "monthly": "month"}
+REQUEST_LIMIT_PERIOD_DAYS = {"daily": 1, "weekly": 7, "monthly": 30}
+
+
+def _effective_request_limit(user_id):
+    """(period, count) governing this visitor's requests - their own
+    per-user override if the admin set one (see /admin/limits), otherwise the
+    global default. period 'none' means unlimited."""
+    override = db.get_user_request_limit(user_id)
+    return override if override is not None else db.get_global_request_limit()
+
+
+def _request_limit_error(user):
+    """None if this visitor is still within their request limit, otherwise a
+    message ready to flash. A rolling window (the last N days from now), not
+    a calendar reset - simpler to reason about and never gives everyone a
+    simultaneous quota refill at midnight. Rejected requests don't count
+    against the limit - see db.count_requests_since()'s docstring."""
+    period, count = _effective_request_limit(user["id"])
+    if period == "none" or count <= 0:
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=REQUEST_LIMIT_PERIOD_DAYS[period])).isoformat(
+        timespec="seconds")
+    if db.count_requests_since(user["id"], since) >= count:
+        return (f"You've reached your request limit of {count} per {REQUEST_LIMIT_PERIOD_LABELS[period]}. "
+                f"Try again later.")
+    return None
 
 
 @app.route("/request", methods=["POST"])
@@ -381,6 +420,10 @@ def submit_request():
         return redirect(next_url)
     appid = int(raw_appid)
 
+    if db.is_blacklisted(appid):
+        flash("That game can't be requested.", "error")
+        return redirect(next_url)
+
     if db.get_active_request_for_appid(appid):
         flash("That game has already been requested.", "error")
         return redirect(next_url)
@@ -389,16 +432,24 @@ def submit_request():
         flash("That game is already installed.", "error")
         return redirect(next_url)
 
+    user = current_user()
+    limit_error = _request_limit_error(user)
+    if limit_error:
+        flash(limit_error, "error")
+        return redirect(next_url)
+
     summary = steam.fetch_app_summary(appid)
     if summary is None:
         flash("Could not look up that game on Steam - please try again.", "error")
         return redirect(next_url)
 
-    user = current_user()
     db.create_request(summary["appid"], summary["name"], summary["icon_url"],
                        summary["short_description"], user["id"], user["name"])
     flash(f'Requested "{summary["name"]}".', "success")
     return redirect(next_url)
+
+
+UNCATEGORIZED_GENRE_LABEL = "Uncategorized"
 
 
 @app.route("/collections")
@@ -406,13 +457,30 @@ def collections():
     """Every game the scanner currently recognizes as installed - public,
     read-only, no sign-in needed, same as search itself (only *requesting*
     needs a Jellyfin sign-in). A local DB read, not network I/O - see
-    _matched_games_by_appid()'s own docstring."""
+    _matched_games_by_appid()'s own docstring.
+
+    Grouped into Jellyfin-style genre rows: a game with more than one Steam
+    genre shows up in each of its rows, same as a movie appearing under both
+    "Action" and "Adventure" there. `games` (the flat, alphabetical list) is
+    kept too, for the client-side filter script, which doesn't care about
+    row structure."""
     games = list(_matched_games_by_appid().values())
     for g in games:
         if not g["name"]:
             g["name"] = scanner.strip_tag(g["folder_name"])
+        g["genre_list"] = scanner.split_genres(g.get("genres"))
     games.sort(key=lambda g: g["name"].lower())
-    return render_template("collections.html", games=games)
+
+    genre_to_games = {}
+    for g in games:
+        for genre in g["genre_list"] or [UNCATEGORIZED_GENRE_LABEL]:
+            genre_to_games.setdefault(genre, []).append(g)
+    ordered_genres = sorted((g for g in genre_to_games if g != UNCATEGORIZED_GENRE_LABEL), key=str.lower)
+    if UNCATEGORIZED_GENRE_LABEL in genre_to_games:
+        ordered_genres.append(UNCATEGORIZED_GENRE_LABEL)
+    rows = [{"genre": genre, "games": genre_to_games[genre]} for genre in ordered_genres]
+
+    return render_template("collections.html", games=games, rows=rows)
 
 
 @app.route("/my-requests")
@@ -574,12 +642,14 @@ def admin_scanner():
         "admin_scanner.html", active="scanner",
         pending=db.list_scanned_folders(status="pending_review"),
         unmatched=db.list_scanned_folders(status="unmatched"),
+        deleted=db.list_scanned_folders(status="deleted"),
         matched_count=len(db.list_scanned_folders(status="matched")),
         folders=folders,
         multiple_roots=len(folders) > 1,
         scan_interval_minutes=db.get_setting(
             scanner.SCAN_INTERVAL_MINUTES_SETTING, str(scanner.DEFAULT_SCAN_INTERVAL_MINUTES)),
         fuzzy_threshold=scanner.fuzzy_match_threshold(),
+        recently_added_count=scanner.recently_added_count(),
     )
 
 
@@ -593,6 +663,10 @@ def admin_scanner_settings():
     threshold_raw = request.form.get("fuzzy_match_threshold", "")
     if threshold_raw.isdigit():
         scanner.set_fuzzy_match_threshold(int(threshold_raw))
+
+    recently_added_raw = request.form.get("recently_added_count", "")
+    if recently_added_raw.isdigit() and int(recently_added_raw) > 0:
+        scanner.set_recently_added_count(int(recently_added_raw))
 
     flash("Scanner settings saved.", "success")
     return redirect(url_for("admin_scanner"))
@@ -667,6 +741,126 @@ def admin_scanner_confirm(row_id):
     else:
         flash(f'Matched "{result["folder_name"]}" to {result["name"]} (AppID {result["appid"]}).', "success")
     return redirect(url_for("admin_scanner"))
+
+
+@app.route("/admin/scanner/<int:row_id>/forget", methods=["POST"])
+@login_required
+def admin_scanner_forget_deleted(row_id):
+    """Permanently removes one 'deleted' row's history (see
+    db.prune_scanned_folders's docstring for how a row gets here) - purely a
+    record-keeping cleanup, since matched_appids() already ignores 'deleted'
+    rows regardless."""
+    row = db.get_scanned_folder(row_id)
+    if row is None or row["status"] != "deleted":
+        abort(404)
+    db.delete_scanned_folder(row_id)
+    flash(f'Forgot "{scanner.strip_tag(row["folder_name"])}".', "success")
+    return redirect(url_for("admin_scanner"))
+
+
+# ---------------------------------------------------------------------------
+# Blacklist - Steam AppIDs nobody should be able to request (see db.py's
+# blacklist table and app.py's submit_request, the enforcement point).
+# ---------------------------------------------------------------------------
+@app.route("/admin/blacklist")
+@login_required
+def admin_blacklist():
+    return render_template("admin_blacklist.html", active="blacklist", entries=db.list_blacklist())
+
+
+@app.route("/admin/blacklist/add", methods=["POST"])
+@login_required
+def admin_blacklist_add():
+    raw_appid = request.form.get("appid", "")
+    reason = request.form.get("reason", "").strip()[:500]
+    if not raw_appid.isdigit():
+        flash("Enter a numeric Steam AppID.", "error")
+        return redirect(url_for("admin_blacklist"))
+    appid = int(raw_appid)
+
+    summary = steam.fetch_app_summary(appid)
+    name = summary["name"] if summary else f"AppID {appid}"
+    entry_id = db.add_to_blacklist(appid, name, reason)
+    if entry_id is None:
+        flash(f'"{name}" is already blacklisted.', "error")
+    else:
+        flash(f'Blacklisted "{name}". Existing requests for it are unaffected - review those separately.',
+              "success")
+    return redirect(url_for("admin_blacklist"))
+
+
+@app.route("/admin/blacklist/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def admin_blacklist_delete(entry_id):
+    db.remove_from_blacklist(entry_id)
+    flash("Removed from blacklist.", "success")
+    return redirect(url_for("admin_blacklist"))
+
+
+# ---------------------------------------------------------------------------
+# Request limits - one global default plus a per-user override, mirroring
+# Seerr's "global quota, per-user override" shape. See db.py's
+# get_global_request_limit()/user_request_limits and app.py's
+# submit_request (the enforcement point, via _request_limit_error above).
+# ---------------------------------------------------------------------------
+@app.route("/admin/limits")
+@login_required
+def admin_limits():
+    global_period, global_count = db.get_global_request_limit()
+    overrides_by_id = {row["requested_by_id"]: row for row in db.list_user_request_limits()}
+    users = []
+    for requester in db.distinct_requesters():
+        override = overrides_by_id.get(requester["requested_by_id"])
+        users.append({
+            "id": requester["requested_by_id"],
+            "name": requester["requested_by_name"],
+            "last_requested_at": requester["last_requested_at"],
+            "override_period": override["period"] if override else "",
+            "override_count": override["limit_count"] if override else "",
+        })
+    return render_template(
+        "admin_limits.html", active="limits", users=users,
+        global_period=global_period, global_count=global_count,
+        periods=db.REQUEST_LIMIT_PERIODS)
+
+
+@app.route("/admin/limits/global", methods=["POST"])
+@login_required
+def admin_limits_global():
+    period = request.form.get("period", "none")
+    count_raw = request.form.get("count", "0")
+    if period not in db.REQUEST_LIMIT_PERIODS:
+        flash("Unknown limit period.", "error")
+        return redirect(url_for("admin_limits"))
+    count = int(count_raw) if count_raw.isdigit() else 0
+    if period != "none" and count <= 0:
+        flash("Enter how many requests are allowed per period.", "error")
+        return redirect(url_for("admin_limits"))
+    db.set_global_request_limit(period, count)
+    flash("Global request limit saved.", "success")
+    return redirect(url_for("admin_limits"))
+
+
+@app.route("/admin/limits/user/<user_id>/set", methods=["POST"])
+@login_required
+def admin_limits_set_user(user_id):
+    name = request.form.get("name", "").strip()
+    period = request.form.get("period", "none")
+    count_raw = request.form.get("count", "0")
+    if period not in db.REQUEST_LIMIT_PERIODS:
+        flash("Unknown limit period.", "error")
+        return redirect(url_for("admin_limits"))
+    if period == "none":
+        db.clear_user_request_limit(user_id)
+        flash("Override cleared - this visitor now follows the global limit.", "success")
+        return redirect(url_for("admin_limits"))
+    count = int(count_raw) if count_raw.isdigit() else 0
+    if count <= 0:
+        flash("Enter how many requests are allowed per period.", "error")
+        return redirect(url_for("admin_limits"))
+    db.set_user_request_limit(user_id, name, period, count)
+    flash(f"Limit override saved for {name}.", "success")
+    return redirect(url_for("admin_limits"))
 
 
 # ---------------------------------------------------------------------------
