@@ -7,6 +7,23 @@ def test_index_loads(client):
     assert b"Games Portal" in resp.data
 
 
+def test_index_footer_links_to_the_repo(client):
+    import config
+    import updater
+    resp = client.get("/")
+    assert b"games-portal" in resp.data
+    assert config.VERSION_DISPLAY.encode() in resp.data
+    assert f'href="{updater.REPO_URL}"'.encode() in resp.data
+    assert b"Check it out on GitHub" in resp.data
+
+
+def test_collections_footer_links_to_the_repo(client):
+    import updater
+    resp = client.get("/collections")
+    assert f'href="{updater.REPO_URL}"'.encode() in resp.data
+    assert b"Check it out on GitHub" in resp.data
+
+
 def test_search_shows_results(client, monkeypatch):
     import steam
 
@@ -25,6 +42,20 @@ def test_search_shows_results(client, monkeypatch):
     assert resp.status_code == 200
     assert b"Half-Life" in resp.data
     assert b"A classic FPS." in resp.data
+
+
+def test_search_results_link_out_to_their_steam_store_page(client, monkeypatch):
+    import steam
+
+    def fake_search(term):
+        return [{"appid": 70, "name": "Half-Life", "icon_url": "", "short_description": ""}]
+
+    monkeypatch.setattr(steam, "search", fake_search)
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+
+    resp = client.get("/?q=half-life")
+    assert b'href="https://store.steampowered.com/app/70"' in resp.data
+    assert b"Check out on Steam" in resp.data
 
 
 def test_search_degrades_gracefully_on_steam_failure(client, monkeypatch):
@@ -53,8 +84,42 @@ def test_search_shows_available_badge_instead_of_a_request_button(client, monkey
 
     resp = client.get("/?q=half-life")
     assert resp.status_code == 200
-    assert b'class="badge available"' in resp.data
+    assert b'class="badge available literal"' in resp.data
     assert b'name="appid" value="220"' not in resp.data  # no Request form rendered
+
+
+def test_search_shows_available_on_the_folders_label(client, monkeypatch):
+    import db
+    import steam
+
+    def fake_search(term):
+        return [{"appid": 220, "name": "Half-Life 2", "icon_url": "", "short_description": ""}]
+
+    monkeypatch.setattr(steam, "search", fake_search)
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+    db.add_games_folder("/games", label="SSD")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2")
+
+    resp = client.get("/?q=half-life")
+    assert b"Available on SSD" in resp.data
+
+
+def test_search_shows_a_blacklisted_badge_and_no_request_button(visitor_session, monkeypatch):
+    import db
+    import steam
+
+    def fake_search(term):
+        return [{"appid": 220, "name": "Half-Life 2", "icon_url": "", "short_description": ""}]
+
+    monkeypatch.setattr(steam, "search", fake_search)
+    monkeypatch.setattr(steam, "enrich_with_descriptions", lambda results: results)
+    db.add_to_blacklist(220, "Half-Life 2", "Nope")
+
+    resp = visitor_session.get("/?q=half-life")
+    assert b'class="badge blacklisted"' in resp.data
+    assert b"Nope" in resp.data
+    assert b'name="appid" value="220"' not in resp.data
 
 
 def test_request_requires_visitor_login(client):
@@ -113,6 +178,58 @@ def test_request_rejects_unresolvable_appid(visitor_session, monkeypatch):
     assert b"Could not look up" in resp.data
 
 
+def test_request_refuses_a_blacklisted_appid(visitor_session):
+    import db
+    db.add_to_blacklist(220, "Half-Life 2", "Nope")
+
+    resp = visitor_session.post("/request", data={"appid": "220", "next": "/"}, follow_redirects=True)
+    assert b"can&#39;t be requested" in resp.data or b"can't be requested" in resp.data
+    assert db.list_requests() == []
+
+
+def test_request_refuses_once_the_global_limit_is_reached(visitor_session, monkeypatch):
+    import db
+    import steam
+    db.set_global_request_limit("daily", 1)
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                         lambda appid: {"appid": appid, "name": "Game", "icon_url": "", "short_description": ""})
+
+    first = visitor_session.post("/request", data={"appid": "70", "next": "/"}, follow_redirects=True)
+    assert b"Requested" in first.data
+
+    second = visitor_session.post("/request", data={"appid": "220", "next": "/"}, follow_redirects=True)
+    assert b"reached your request limit" in second.data
+    assert len(db.list_requests()) == 1
+
+
+def test_a_per_user_override_takes_priority_over_the_global_limit(visitor_session, monkeypatch):
+    import db
+    import steam
+    db.set_global_request_limit("daily", 1)
+    db.set_user_request_limit("jf-user-1", "alice", "daily", 5)
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                         lambda appid: {"appid": appid, "name": "Game", "icon_url": "", "short_description": ""})
+
+    for appid in (70, 220, 620):
+        resp = visitor_session.post("/request", data={"appid": str(appid), "next": "/"}, follow_redirects=True)
+        assert b"Requested" in resp.data
+    assert len(db.list_requests()) == 3
+
+
+def test_a_rejected_request_does_not_count_against_the_limit(visitor_session, monkeypatch):
+    import db
+    import steam
+    db.set_global_request_limit("daily", 1)
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                         lambda appid: {"appid": appid, "name": "Game", "icon_url": "", "short_description": ""})
+
+    visitor_session.post("/request", data={"appid": "70", "next": "/"})
+    db.update_request_status(db.list_requests()[0]["id"], "rejected", "")
+
+    resp = visitor_session.post("/request", data={"appid": "220", "next": "/"}, follow_redirects=True)
+    assert b"Requested" in resp.data
+
+
 # ---------------------------------------------------------------------------
 # Collections (public, read-only, no sign-in - same as search itself) and the
 # "Recently added" strip on the search page
@@ -133,7 +250,17 @@ def test_collections_shows_matched_games_with_pictures(client):
     assert resp.status_code == 200
     assert b"Half-Life 2" in resp.data
     assert b'src="http://img/220.jpg"' in resp.data
-    assert b'class="badge available"' in resp.data
+    assert b'class="badge available literal"' in resp.data
+
+
+def test_collections_games_link_out_to_their_steam_store_page(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2")
+    resp = client.get("/collections")
+    assert b'href="https://store.steampowered.com/app/220"' in resp.data
+    assert b"Check out on Steam" in resp.data
 
 
 def test_collections_falls_back_to_the_folder_name_when_steam_details_are_missing(client):
@@ -142,6 +269,32 @@ def test_collections_falls_back_to_the_folder_name_when_steam_details_are_missin
     db.upsert_scanned_folder("/games", "Some Game {steamapp-999}", "matched", steam_appid=999)
     resp = client.get("/collections")
     assert b"Some Game" in resp.data
+
+
+def test_collections_groups_games_into_genre_rows(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2", genres="Action,Adventure")
+    db.upsert_scanned_folder("/games", "Stardew Valley {steamapp-413150}", "matched", steam_appid=413150,
+                              name="Stardew Valley", genres="")
+
+    resp = client.get("/collections")
+    assert resp.status_code == 200
+    assert b"Action" in resp.data
+    assert b"Adventure" in resp.data
+    assert b"Uncategorized" in resp.data
+    # A game with two genres appears once per genre row it belongs to.
+    assert resp.data.count(b'rail-card__title">Half-Life 2') == 2
+
+
+def test_collections_shows_available_on_the_folders_label(client):
+    import db
+    db.add_games_folder("/games", label="SSD")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2")
+    resp = client.get("/collections")
+    assert b"Available on SSD" in resp.data
 
 
 def test_index_shows_recently_added_only_without_an_active_search(client, monkeypatch):
@@ -158,6 +311,29 @@ def test_index_shows_recently_added_only_without_an_active_search(client, monkey
     monkeypatch.setattr(steam, "search", lambda term: [])
     resp = client.get("/?q=portal")
     assert b"Recently added" not in resp.data
+
+
+def test_recently_added_games_link_out_to_their_steam_store_page(client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220,
+                              name="Half-Life 2", matched_at=db.now_iso())
+    resp = client.get("/")
+    assert b'href="https://store.steampowered.com/app/220"' in resp.data
+    assert b"Check out on Steam" in resp.data
+
+
+def test_index_respects_the_admin_configured_recently_added_count(client):
+    import db
+    import scanner
+    db.add_games_folder("/games")
+    scanner.set_recently_added_count(1)
+    for appid, name in ((220, "Half-Life 2"), (620, "Portal 2")):
+        db.upsert_scanned_folder("/games", f"{name} {{steamapp-{appid}}}", "matched", steam_appid=appid,
+                                  name=name, matched_at=db.now_iso())
+
+    resp = client.get("/")
+    assert resp.data.count(b"rail-card__title") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +373,24 @@ def test_login_route_404s_when_jellyfin_not_configured(client, monkeypatch):
     monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: False)
     resp = client.get("/login")
     assert resp.status_code == 404
+
+
+def test_visitor_signin_button_shown_on_public_pages(client, monkeypatch):
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+    resp = client.get("/")
+    assert b">Sign in<" in resp.data
+
+
+def test_visitor_signin_button_hidden_in_admin(admin_client, monkeypatch):
+    """The visitor sign-in bar (and, if a Jellyfin session happened to also be
+    active, the visitor's own user chip) has no place on the admin panel - the
+    admin already has its own separate "Sign out" in the admin nav."""
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+    resp = admin_client.get("/admin/requests")
+    assert resp.status_code == 200
+    assert b">Sign in<" not in resp.data
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +559,198 @@ def test_admin_scanner_settings_saves_interval_and_threshold(admin_client):
     resp = admin_client.post("/admin/scanner/settings", data={
         "scan_interval_minutes": "15",
         "fuzzy_match_threshold": "90",
+        "recently_added_count": "20",
     }, follow_redirects=True)
     assert resp.status_code == 200
     assert scanner.scan_interval_seconds() == 15 * 60
     assert scanner.fuzzy_match_threshold() == 90
+    assert scanner.recently_added_count() == 20
+
+
+def test_admin_scanner_page_lists_deleted_games(admin_client):
+    import db
+    db.add_games_folder("/games")
+    db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "deleted", steam_appid=220,
+                              name="Half-Life 2")
+    resp = admin_client.get("/admin/scanner")
+    assert resp.status_code == 200
+    assert b"Half-Life 2" in resp.data
+    assert b'class="badge deleted"' in resp.data
+
+
+def test_admin_scanner_forget_deleted_removes_the_row(admin_client):
+    import db
+    db.add_games_folder("/games")
+    row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "deleted", steam_appid=220,
+                                       name="Half-Life 2")
+    resp = admin_client.post(f"/admin/scanner/{row_id}/forget", follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_scanned_folder(row_id) is None
+
+
+def test_admin_scanner_forget_deleted_404s_for_a_non_deleted_row(admin_client):
+    import db
+    db.add_games_folder("/games")
+    row_id = db.upsert_scanned_folder("/games", "Half-Life 2 {steamapp-220}", "matched", steam_appid=220)
+    resp = admin_client.post(f"/admin/scanner/{row_id}/forget")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Blacklist admin routes
+# ---------------------------------------------------------------------------
+def test_admin_blacklist_requires_login(client):
+    resp = client.get("/admin/blacklist")
+    assert resp.status_code == 302
+
+
+def test_admin_blacklist_add_looks_up_the_name_from_steam(admin_client, monkeypatch):
+    import steam
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                         lambda appid: {"appid": appid, "name": "Half-Life 2", "icon_url": "",
+                                        "short_description": "", "genres": []})
+    resp = admin_client.post("/admin/blacklist/add", data={"appid": "220", "reason": "Too big"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Half-Life 2" in resp.data
+    assert b"Too big" in resp.data
+
+    import db
+    assert db.is_blacklisted(220) is True
+
+
+def test_admin_blacklist_add_refuses_a_duplicate(admin_client, monkeypatch):
+    import db
+    import steam
+    monkeypatch.setattr(steam, "fetch_app_summary",
+                         lambda appid: {"appid": appid, "name": "Half-Life 2", "icon_url": "",
+                                        "short_description": "", "genres": []})
+    db.add_to_blacklist(220, "Half-Life 2")
+    resp = admin_client.post("/admin/blacklist/add", data={"appid": "220"}, follow_redirects=True)
+    assert b"already blacklisted" in resp.data
+
+
+def test_admin_blacklist_delete(admin_client):
+    import db
+    entry_id = db.add_to_blacklist(220, "Half-Life 2")
+    resp = admin_client.post(f"/admin/blacklist/{entry_id}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.is_blacklisted(220) is False
+
+
+# ---------------------------------------------------------------------------
+# Request-limit admin routes
+# ---------------------------------------------------------------------------
+def test_admin_limits_requires_login(client):
+    resp = client.get("/admin/limits")
+    assert resp.status_code == 302
+
+
+def test_admin_limits_saves_the_global_limit(admin_client):
+    import db
+    resp = admin_client.post("/admin/limits/global", data={"period": "weekly", "count": "5"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_global_request_limit() == ("weekly", 5)
+
+
+def test_admin_limits_global_unlimited_ignores_count(admin_client):
+    import db
+    resp = admin_client.post("/admin/limits/global", data={"period": "none", "count": ""},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_global_request_limit()[0] == "none"
+
+
+def test_admin_limits_lists_known_requesters(admin_client):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    resp = admin_client.get("/admin/limits")
+    assert resp.status_code == 200
+    assert b"Alice" in resp.data
+    assert b"Following the global limit" in resp.data
+
+
+def test_admin_limits_sets_a_per_user_override(admin_client):
+    import db
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    resp = admin_client.post("/admin/limits/user/jf-1/set",
+                              data={"name": "Alice", "period": "monthly", "count": "3"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_user_request_limit("jf-1") == ("monthly", 3)
+
+
+def test_admin_limits_clearing_an_override_reverts_to_global(admin_client):
+    import db
+    db.set_user_request_limit("jf-1", "Alice", "monthly", 3)
+    resp = admin_client.post("/admin/limits/user/jf-1/set",
+                              data={"name": "Alice", "period": "none", "count": ""},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_user_request_limit("jf-1") is None
+
+
+def test_admin_limits_lists_jellyfin_users_who_have_never_requested(admin_client, monkeypatch):
+    """A per-user override should be settable before that visitor ever signs
+    in here - the whole point of listing Jellyfin's own user directory
+    instead of only past requesters."""
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "list_public_users",
+                         lambda: {"ok": True, "users": [{"id": "jf-2", "name": "Bob"}]})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert resp.status_code == 200
+    assert b"Bob" in resp.data
+    assert b"Never requested" in resp.data
+
+
+def test_admin_limits_merges_jellyfin_users_with_past_requesters(admin_client, monkeypatch):
+    """A visitor known to both Jellyfin and this app's own requests table
+    must appear once, not twice - and keep their live Jellyfin name."""
+    import db
+    import jellyfin_auth
+    db.create_request(70, "Half-Life", "", "", "jf-1", "old-stored-name")
+    monkeypatch.setattr(jellyfin_auth, "list_public_users",
+                         lambda: {"ok": True, "users": [{"id": "jf-1", "name": "Alice"}]})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert resp.data.count(b"request-row__title") == 1
+    assert b"Alice" in resp.data
+    assert b"old-stored-name" not in resp.data
+    assert b"Last requested" in resp.data  # this one HAS requested before
+
+
+def test_admin_limits_keeps_a_requester_no_longer_on_jellyfins_public_list(admin_client, monkeypatch):
+    """An account since deleted or hidden in Jellyfin must not just vanish
+    from the override list if it still has an override or request history."""
+    import db
+    import jellyfin_auth
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    monkeypatch.setattr(jellyfin_auth, "list_public_users", lambda: {"ok": True, "users": []})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert b"Alice" in resp.data
+
+
+def test_admin_limits_flags_an_unreachable_jellyfin(admin_client, monkeypatch):
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "list_public_users", lambda: {"ok": False, "users": []})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert b"Couldn&#39;t reach Jellyfin" in resp.data or b"Couldn't reach Jellyfin" in resp.data
+
+
+def test_admin_limits_does_not_flag_jellyfin_when_not_configured(admin_client, monkeypatch):
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: False)
+    resp = admin_client.get("/admin/limits")
+    assert b"Couldn&#39;t reach Jellyfin" not in resp.data
+    assert b"Couldn't reach Jellyfin" not in resp.data
 
 
 def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):

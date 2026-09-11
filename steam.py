@@ -84,13 +84,27 @@ def _fetch_short_description(appid):
     return _clean_description((data or {}).get("short_description"))
 
 
+def _extract_genres(data):
+    """Steam's own genre labels ("Action", "Adventure", ...) as a plain list,
+    in whatever order appdetails returned them - used to group /collections
+    into Jellyfin-style rows (see scanner.py's genre caching). Missing/
+    malformed entries are skipped rather than failing the whole fetch."""
+    genres = []
+    for entry in data.get("genres") or []:
+        description = (entry or {}).get("description")
+        if description:
+            genres.append(_clean_description(description))
+    return genres
+
+
 def fetch_app_summary(appid):
-    """Canonical name/icon/description for one app, straight from Steam - used to
-    fill in a request record server-side rather than trusting the hidden form
-    fields a visitor's browser submits (those started life as this same data, but
-    a request row is what the admin reviews and acts on, so it's worth the one
-    extra round trip to not just take a client's word for it). Returns None if
-    the appid doesn't resolve to a real, currently-listed app."""
+    """Canonical name/icon/description/genres for one app, straight from
+    Steam - used to fill in a request record server-side rather than trusting
+    the hidden form fields a visitor's browser submits (those started life as
+    this same data, but a request row is what the admin reviews and acts on,
+    so it's worth the one extra round trip to not just take a client's word
+    for it). Returns None if the appid doesn't resolve to a real, currently-
+    listed app."""
     data = _fetch_appdetails_data(appid)
     if data is None:
         return None
@@ -99,6 +113,7 @@ def fetch_app_summary(appid):
         "name": _clean_description(data.get("name")),
         "icon_url": data.get("header_image") or data.get("capsule_image") or "",
         "short_description": _clean_description(data.get("short_description")),
+        "genres": _extract_genres(data),
     }
 
 

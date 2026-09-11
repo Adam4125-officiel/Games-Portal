@@ -102,6 +102,50 @@ def authenticate(username, password):
     return {"ok": True, "user": {"id": raw_user["Id"], "name": raw_user.get("Name") or username}}
 
 
+def list_public_users():
+    """Every publicly-visible Jellyfin user (id, name) - straight from
+    GET /Users/Public, the same list Jellyfin's own login screen uses to show
+    avatars to pick from. Powers /admin/limits' per-user override list, so an
+    override can be set for a visitor before they've ever signed in here.
+
+    Deliberately unauthenticated - no API key involved, matching this app's
+    existing no-API-key stance elsewhere (Steam search, this module's own
+    AuthenticateByName call). Verified directly against jellyfin/jellyfin's
+    own source (Jellyfin.Api/Controllers/UserController.cs) at tags v10.7.0
+    and v12.0: GetPublicUsers() has no [Authorize] attribute in either, and
+    the endpoint's path/shape is unchanged across that whole range - so this
+    isn't a repeat of the AuthenticateByName header issue 12.0 caused
+    elsewhere, since there was never an auth header here to begin with. It
+    excludes hidden and disabled accounts (Jellyfin's own filtering) and,
+    when this app isn't running on the same host/LAN as Jellyfin, accounts
+    without remote-access enabled - both are Jellyfin's login-screen
+    behavior, not something this app adds on top.
+
+    Returns {"ok": True, "users": [{"id": ..., "name": ...}, ...]} on
+    success, {"ok": False, "users": []} if Jellyfin isn't configured or
+    couldn't be reached - "ok" lets the caller tell a real empty result
+    (nobody public, or everyone filtered out) apart from a failure worth
+    surfacing, the same shape authenticate() already uses this module."""
+    if not is_enabled():
+        return {"ok": False, "users": []}
+
+    base_url = config.JELLYFIN_URL.rstrip("/")
+    try:
+        r = requests.get(f"{base_url}/Users/Public", timeout=config.JELLYFIN_AUTH_TIMEOUT_SECONDS)
+        r.raise_for_status()
+        payload = r.json()
+    except (requests.RequestException, ValueError) as e:
+        _logger.info("Could not fetch Jellyfin's public user list: %s", e)
+        return {"ok": False, "users": []}
+
+    if not isinstance(payload, list):
+        _logger.info("Jellyfin's public user list returned an unexpected shape")
+        return {"ok": False, "users": []}
+
+    users = [{"id": raw["Id"], "name": raw.get("Name") or ""} for raw in payload if raw.get("Id")]
+    return {"ok": True, "users": users}
+
+
 def _revoke_token(base_url, token):
     """Best-effort: a failure here means one stale device session left behind in
     Jellyfin's own device list, which is untidy but harmless - it must never turn

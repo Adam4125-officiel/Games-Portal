@@ -105,10 +105,23 @@ def test_fetch_app_summary_returns_canonical_fields(monkeypatch):
         return _FakeResponse({str(params["appids"]): {
             "success": True,
             "data": {"name": "Half-Life", "header_image": "http://img/header.jpg",
-                      "short_description": "A classic."},
+                      "short_description": "A classic.",
+                      "genres": [{"id": "1", "description": "Action"}, {"id": "25", "description": "Adventure"}]},
         }})
 
     monkeypatch.setattr(steam.requests, "get", fake_get)
     summary = steam.fetch_app_summary(70)
     assert summary == {"appid": 70, "name": "Half-Life", "icon_url": "http://img/header.jpg",
-                        "short_description": "A classic."}
+                        "short_description": "A classic.", "genres": ["Action", "Adventure"]}
+
+
+def test_fetch_app_summary_defaults_genres_to_an_empty_list(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        return _FakeResponse({str(params["appids"]): {
+            "success": True,
+            "data": {"name": "Half-Life", "header_image": "", "short_description": ""},
+        }})
+
+    monkeypatch.setattr(steam.requests, "get", fake_get)
+    summary = steam.fetch_app_summary(70)
+    assert summary["genres"] == []

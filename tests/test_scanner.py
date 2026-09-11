@@ -107,6 +107,19 @@ def test_scan_interval_has_a_floor(isolated_db):
     assert scanner.scan_interval_seconds() == scanner.MIN_SCAN_INTERVAL_SECONDS
 
 
+def test_recently_added_count_has_a_default_and_is_settable_and_clamped(isolated_db):
+    assert scanner.recently_added_count() == scanner.DEFAULT_RECENTLY_ADDED_COUNT
+
+    scanner.set_recently_added_count(25)
+    assert scanner.recently_added_count() == 25
+
+    scanner.set_recently_added_count(9999)
+    assert scanner.recently_added_count() == scanner.MAX_RECENTLY_ADDED_COUNT
+
+    scanner.set_recently_added_count(0)
+    assert scanner.recently_added_count() == 1
+
+
 # ---------------------------------------------------------------------------
 # scan_once()
 # ---------------------------------------------------------------------------
@@ -214,12 +227,51 @@ def test_an_unreadable_root_does_not_touch_its_existing_rows(isolated_db):
     assert db.list_scanned_folders()[0]["status"] == "matched"
 
 
-def test_a_folder_removed_from_disk_is_pruned_from_the_next_scan(one_root, monkeypatch):
+def test_a_matched_folder_removed_from_disk_is_marked_deleted_not_pruned(one_root, monkeypatch):
+    """A folder deleted server-side must not just vanish from the database -
+    the admin keeps a visible record (status='deleted'), and critically the
+    game becomes re-requestable again (matched_appids() only counts
+    'matched') rather than staying permanently blocked."""
     monkeypatch.setattr(steam, "search", _fake_search({}))
     folder = one_root / "Half-Life 2 {steamapp-220}"
     folder.mkdir()
     scanner.scan_once()
     assert len(db.list_scanned_folders()) == 1
+
+    folder.rmdir()
+    scanner.scan_once()
+    rows = db.list_scanned_folders()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "deleted"
+    assert rows[0]["steam_appid"] == 220
+    assert scanner.matched_appids() == set()
+
+
+def test_a_deleted_folder_that_reappears_is_matched_again(one_root, monkeypatch):
+    monkeypatch.setattr(steam, "search", _fake_search({}))
+    folder = one_root / "Half-Life 2 {steamapp-220}"
+    folder.mkdir()
+    scanner.scan_once()
+    folder.rmdir()
+    scanner.scan_once()
+    assert db.list_scanned_folders()[0]["status"] == "deleted"
+
+    folder.mkdir()
+    scanner.scan_once()
+    row = db.list_scanned_folders()[0]
+    assert row["status"] == "matched"
+    assert scanner.matched_appids() == {220}
+
+
+def test_an_unmatched_folder_removed_from_disk_is_pruned_outright(one_root, monkeypatch):
+    """Unlike a matched game, an unmatched/pending_review folder has no
+    confirmed game identity worth preserving as 'deleted' - removed the same
+    way this always worked."""
+    monkeypatch.setattr(steam, "search", _fake_search({}))
+    folder = one_root / "Some Unmatched Game"
+    folder.mkdir()
+    scanner.scan_once()
+    assert db.list_scanned_folders()[0]["status"] == "unmatched"
 
     folder.rmdir()
     scanner.scan_once()
@@ -231,6 +283,44 @@ def test_matched_appids_reflects_only_matched_rows(one_root, monkeypatch):
     (one_root / "Portal 2 {steamapp-620}").mkdir()
     scanner.scan_once()
     assert scanner.matched_appids() == {220, 620}
+
+
+def test_a_tagged_folder_caches_genres_from_steams_appdetails(one_root, monkeypatch):
+    (one_root / "Half-Life 2 {steamapp-220}").mkdir()
+    monkeypatch.setattr(steam, "fetch_app_summary", lambda appid: {
+        "appid": appid, "name": "Half-Life 2", "icon_url": "", "short_description": "",
+        "genres": ["Action", "Adventure"]})
+
+    scanner.scan_once()
+    row = db.list_scanned_folders(status="matched")[0]
+    assert row["genres"] == "Action,Adventure"
+
+
+def test_a_previously_matched_row_with_no_cached_genres_is_backfilled_once(one_root, monkeypatch):
+    """A row matched before the genres column existed has genres=NULL, not
+    "" - that distinction is what forces exactly one re-fetch to backfill it
+    (see scanner._cached_or_fetched_details's docstring), rather than
+    leaving every pre-upgrade game permanently uncategorized."""
+    folder_name = "Half-Life 2 {steamapp-220}"
+    (one_root / folder_name).mkdir()
+    db.upsert_scanned_folder(str(one_root), folder_name, "matched", steam_appid=220,
+                              name="Half-Life 2", icon_url="", short_description="", genres=None)
+
+    calls = []
+
+    def fake_summary(appid):
+        calls.append(appid)
+        return {"appid": appid, "name": "Half-Life 2", "icon_url": "", "short_description": "",
+                "genres": ["Action"]}
+    monkeypatch.setattr(steam, "fetch_app_summary", fake_summary)
+
+    scanner.scan_once()
+    assert calls == [220]  # backfilled exactly once
+    row = db.list_scanned_folders(status="matched")[0]
+    assert row["genres"] == "Action"
+
+    scanner.scan_once()  # already cached now - no second fetch
+    assert calls == [220]
 
 
 def test_matched_at_is_stamped_once_and_preserved_on_later_scans(one_root, monkeypatch):
@@ -330,7 +420,7 @@ def test_confirm_match_renames_the_folder_and_marks_it_matched(unmatched_folder,
     root, row_id = unmatched_folder
     monkeypatch.setattr(steam, "fetch_app_summary",
                          lambda appid: {"appid": appid, "name": "Half-Life 2", "icon_url": "",
-                                        "short_description": ""})
+                                        "short_description": "", "genres": []})
 
     result = scanner.confirm_match(row_id, 220)
     assert result["folder_name"] == "Half Life 2 {steamapp-220}"
@@ -357,7 +447,7 @@ def test_confirm_match_refuses_when_the_folder_is_gone(unmatched_folder, monkeyp
     root, row_id = unmatched_folder
     (root / "Half Life 2").rmdir()
     monkeypatch.setattr(steam, "fetch_app_summary",
-                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": ""})
+                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": "", "genres": []})
 
     with pytest.raises(scanner.ScannerError, match="no longer exists"):
         scanner.confirm_match(row_id, 220)
@@ -367,7 +457,7 @@ def test_confirm_match_refuses_a_rename_that_would_collide(unmatched_folder, mon
     root, row_id = unmatched_folder
     (root / "Half Life 2 {steamapp-220}").mkdir()
     monkeypatch.setattr(steam, "fetch_app_summary",
-                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": ""})
+                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": "", "genres": []})
 
     with pytest.raises(scanner.ScannerError, match="already exists"):
         scanner.confirm_match(row_id, 220)
@@ -376,7 +466,7 @@ def test_confirm_match_refuses_a_rename_that_would_collide(unmatched_folder, mon
 def test_confirm_match_refuses_a_folder_name_that_escapes_its_root(one_root, monkeypatch):
     row_id = db.upsert_scanned_folder(str(one_root), "../escape", "unmatched")
     monkeypatch.setattr(steam, "fetch_app_summary",
-                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": ""})
+                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": "", "genres": []})
 
     with pytest.raises(scanner.ScannerError, match="unsafe"):
         scanner.confirm_match(row_id, 220)
@@ -386,7 +476,7 @@ def test_confirm_match_refuses_a_root_no_longer_configured(unmatched_folder, mon
     root, row_id = unmatched_folder
     _configure_folders("")  # admin removed every configured folder
     monkeypatch.setattr(steam, "fetch_app_summary",
-                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": ""})
+                         lambda appid: {"appid": appid, "name": "x", "icon_url": "", "short_description": "", "genres": []})
 
     with pytest.raises(scanner.ScannerError, match="isn't configured"):
         scanner.confirm_match(row_id, 220)

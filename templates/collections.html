@@ -21,33 +21,48 @@
     <p class="empty-state">Nothing recognized as installed yet.</p>
   {% endif %}
 
-  <div class="results-grid" id="collections-grid">
-    {% for g in games %}
-      <div class="result-card" data-name="{{ g.name|lower }}">
-        {% if g.icon_url %}
-          <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
-        {% else %}
-          <div class="result-card__icon result-card__icon--placeholder">🎮</div>
-        {% endif %}
-        <div class="result-card__body">
-          <div class="result-card__title">{{ g.name }}</div>
-          {% if g.short_description %}
-            <p class="result-card__desc">{{ g.short_description }}</p>
-          {% endif %}
+  <div id="collections-grid">
+    {% for row in rows %}
+      <section class="collection-row" data-collection-row>
+        <h2 class="collection-row__heading">{{ row.genre }}</h2>
+        <div class="rail" data-rail>
+          <button type="button" class="rail__arrow" data-rail-prev aria-label="Scroll left">‹</button>
+          <div class="rail__track" data-rail-track>
+            {% for g in row.games %}
+              <div class="rail__item">
+                <div class="rail-card" data-name="{{ g.name|lower }}">
+                  {% if g.icon_url %}
+                    <img class="rail-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+                  {% else %}
+                    <div class="rail-card__icon rail-card__icon--placeholder">🎮</div>
+                  {% endif %}
+                  <div class="rail-card__title">{{ g.name }}</div>
+                  {% if g.short_description %}
+                    <p class="rail-card__desc">{{ g.short_description }}</p>
+                  {% endif %}
+                  <div class="rail-card__actions">
+                    <span class="badge available literal">{{ 'Available on ' + g.folder_label if g.folder_label else 'Available' }}</span>
+                    {% if g.display_path %}
+                      <details class="path-disclosure">
+                        <summary>Where is it?</summary>
+                        <code>{{ g.display_path }}</code>
+                      </details>
+                    {% endif %}
+                    <a class="steam-link" href="https://store.steampowered.com/app/{{ g.steam_appid }}" target="_blank" rel="noopener">Check out on Steam</a>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          <button type="button" class="rail__arrow" data-rail-next aria-label="Scroll right">›</button>
         </div>
-        <div class="result-card__actions">
-          <span class="badge available">available</span>
-          {% if g.display_path %}
-            <details class="path-disclosure">
-              <summary>Where is it?</summary>
-              <code>{{ g.display_path }}</code>
-            </details>
-          {% endif %}
-        </div>
-      </div>
+      </section>
     {% endfor %}
   </div>
   <p class="empty-state" id="collections-no-match" hidden>No games match your filter.</p>
+
+  <footer class="foot">games-portal {{ version_display }} · <a href="{{ repo_url }}" target="_blank" rel="noopener">Like this page? ⭐ Check it out on GitHub</a></footer>
 </div>
 <script src="{{ url_for('static', filename='js/collections_filter.js') }}"></script>
+<script src="{{ url_for('static', filename='js/rail_scroll.js') }}"></script>
 {% endblock %}

@@ -203,6 +203,14 @@ def init_db():
     # ever advancing this on a genuine new match, never on a routine rescan
     # of something already matched.
     _ensure_column(conn, "installed_games", "matched_at", "TEXT")
+    # Steam's appdetails genre list, comma-joined (e.g. "Action,Adventure") -
+    # cached the same way name/icon_url/short_description are (fetched once,
+    # reused on later scans). NULL means "never fetched under this schema",
+    # distinct from "" (fetched, Steam listed no genres) - see
+    # scanner._cached_or_fetched_details()'s docstring for why that
+    # distinction matters (it's what forces exactly one backfill fetch for
+    # rows matched before this column existed).
+    _ensure_column(conn, "installed_games", "genres", "TEXT")
 
     # Configured root folders (see scanner.py) - one row per folder, admin-
     # managed from /admin/scanner. `path` is the real, server-side filesystem
@@ -221,6 +229,36 @@ def init_db():
             label TEXT NOT NULL DEFAULT '',
             client_path TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
+        )
+    """)
+
+    # Admin-maintained: a Steam AppID nobody should be able to request, with an
+    # optional reason shown back to the admin (never to visitors - see
+    # app.py's submit_request). Real admin-authored data, not a rebuildable
+    # cache, but deliberately NOT added to RESTORE_REQUIRED_TABLES above - the
+    # same reasoning as installed_games: a backup taken before this table
+    # existed must stay restorable.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS blacklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            steam_appid INTEGER NOT NULL UNIQUE,
+            name TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # Per-visitor override of the global request-limit setting (see
+    # get_global_request_limit()/set_setting below) - one row per Jellyfin
+    # user id that has ever been given a specific override. A user with no
+    # row here is simply governed by the global limit.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS user_request_limits (
+            requested_by_id TEXT PRIMARY KEY,
+            requested_by_name TEXT NOT NULL DEFAULT '',
+            period TEXT NOT NULL,
+            limit_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
         )
     """)
 
@@ -339,19 +377,19 @@ def delete_request(request_id):
 # ---------------------------------------------------------------------------
 # Installed-games scanner (see scanner.py)
 # ---------------------------------------------------------------------------
-INSTALLED_GAME_STATUSES = ("matched", "pending_review", "unmatched")
+INSTALLED_GAME_STATUSES = ("matched", "pending_review", "unmatched", "deleted")
 
 
 def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, candidate_appid=None,
                            candidate_name=None, candidate_score=None, name=None, icon_url=None,
-                           short_description=None, matched_at=None):
+                           short_description=None, matched_at=None, genres=None):
     """Inserts or updates one folder's row by (root_path, folder_name) - its
     unique key now that more than one root folder can be configured (two
     disks can each have a same-named subfolder). Called once per folder, per
     scan pass, by scanner.scan_once().
 
-    name/icon_url/short_description are the cached Steam details shown on
-    the public /collections page for a matched row - only ever passed for a
+    name/icon_url/short_description/genres are the cached Steam details shown
+    on the public /collections page for a matched row - only ever passed for a
     'matched' status; left NULL (and therefore untouched by this INSERT's
     own defaults) for pending_review/unmatched rows, which have no confirmed
     game to describe yet. matched_at is likewise only meaningful for
@@ -366,9 +404,9 @@ def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, cand
     conn.execute("""
         INSERT INTO installed_games
             (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
-             candidate_score, name, icon_url, short_description, matched_at,
+             candidate_score, name, icon_url, short_description, matched_at, genres,
              created_at, updated_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(root_path, folder_name) DO UPDATE SET
             steam_appid=excluded.steam_appid,
             status=excluded.status,
@@ -379,15 +417,28 @@ def upsert_scanned_folder(root_path, folder_name, status, steam_appid=None, cand
             icon_url=excluded.icon_url,
             short_description=excluded.short_description,
             matched_at=excluded.matched_at,
+            genres=excluded.genres,
             updated_at=excluded.updated_at,
             last_seen_at=excluded.last_seen_at
     """, (root_path, folder_name, steam_appid, status, candidate_appid, candidate_name,
-          candidate_score, name, icon_url, short_description, matched_at, ts, ts, ts))
+          candidate_score, name, icon_url, short_description, matched_at, genres, ts, ts, ts))
     conn.commit()
     row = conn.execute("SELECT id FROM installed_games WHERE root_path=? AND folder_name=?",
                         (root_path, folder_name)).fetchone()
     conn.close()
     return row["id"]
+
+
+def delete_scanned_folder(row_id):
+    """Permanently forgets one installed_games row - used by the admin's
+    "Forget" action on a 'deleted' row (see app.py's
+    admin_scanner_forget_deleted). Not used for the ordinary matched/
+    pending_review/unmatched lifecycle, which prune_scanned_folders() handles
+    on its own."""
+    conn = get_db()
+    conn.execute("DELETE FROM installed_games WHERE id=?", (row_id,))
+    conn.commit()
+    conn.close()
 
 
 def list_scanned_folders(status=None):
@@ -410,7 +461,7 @@ def get_scanned_folder(row_id):
 
 
 def mark_folder_matched(row_id, folder_name, steam_appid, name=None, icon_url=None,
-                         short_description=None, matched_at=None):
+                         short_description=None, matched_at=None, genres=None):
     """Called after scanner.confirm_match() successfully renames a folder on
     disk to embed its confirmed AppID tag - updates the row's folder_name
     (root_path never changes; a confirmed match is always renamed in place,
@@ -424,10 +475,11 @@ def mark_folder_matched(row_id, folder_name, steam_appid, name=None, icon_url=No
         UPDATE installed_games
         SET folder_name=?, steam_appid=?, status='matched',
             candidate_appid=NULL, candidate_name=NULL, candidate_score=NULL,
-            name=?, icon_url=?, short_description=?, matched_at=?,
+            name=?, icon_url=?, short_description=?, matched_at=?, genres=?,
             updated_at=?, last_seen_at=?
         WHERE id=?
-    """, (folder_name, steam_appid, name, icon_url, short_description, matched_at, ts, ts, row_id))
+    """, (folder_name, steam_appid, name, icon_url, short_description, matched_at, genres,
+          ts, ts, row_id))
     conn.commit()
     conn.close()
 
@@ -458,14 +510,26 @@ def matched_appids():
 
 
 def prune_scanned_folders(configured_roots, scanned_roots, seen_pairs):
-    """Removes rows that are stale in one of two distinct ways:
+    """Reconciles installed_games against what this scan pass actually found
+    on disk, in one of three ways:
 
     - the row's root_path is no longer configured at all (the admin removed
       it from the games-folders list) - a deliberate configuration change,
-      always safe to prune;
+      always safe to delete outright regardless of status;
     - the row's root_path *is* still configured and was successfully listed
       this scan pass (scanned_roots), so we positively know what's currently
-      there, but this particular (root_path, folder_name) wasn't in it.
+      there, but this particular (root_path, folder_name) wasn't in it, and
+      the row was 'matched' - its folder was actually deleted server-side.
+      Marked 'deleted' rather than removed: matched_appids() only counts
+      'matched' rows, so a deleted game immediately becomes re-requestable
+      again, but the admin keeps a visible record of it (and if the same
+      folder name reappears with its tag intact, the very next scan finds it
+      via existing_by_key and flips it straight back to 'matched') - see
+      scanner.scan_once() and app.py's /admin/scanner "deleted" panel;
+    - same as above but the row wasn't 'matched' (pending_review/unmatched) -
+      there's no confirmed game identity worth preserving, so it's deleted
+      outright, same as before this distinction existed. A row already
+      'deleted' that's still missing is left alone rather than touched again.
 
     A row whose root is still configured but wasn't successfully scanned
     this pass (a disk that's temporarily offline, say) is left completely
@@ -473,17 +537,27 @@ def prune_scanned_folders(configured_roots, scanned_roots, seen_pairs):
     `seen_pairs` is a set of (root_path, folder_name) tuples actually found
     this pass, across every root that was successfully listed."""
     conn = get_db()
-    rows = conn.execute("SELECT id, root_path, folder_name FROM installed_games").fetchall()
-    stale_ids = []
+    rows = conn.execute("SELECT id, root_path, folder_name, status FROM installed_games").fetchall()
+    delete_ids = []
+    newly_deleted_ids = []
     for row in rows:
-        root, name = row["root_path"], row["folder_name"]
+        root, name, status = row["root_path"], row["folder_name"], row["status"]
         if root not in configured_roots:
-            stale_ids.append(row["id"])
+            delete_ids.append(row["id"])
         elif root in scanned_roots and (root, name) not in seen_pairs:
-            stale_ids.append(row["id"])
-    if stale_ids:
-        placeholders = ",".join("?" * len(stale_ids))
-        conn.execute(f"DELETE FROM installed_games WHERE id IN ({placeholders})", stale_ids)
+            if status == "matched":
+                newly_deleted_ids.append(row["id"])
+            elif status != "deleted":
+                delete_ids.append(row["id"])
+    if newly_deleted_ids:
+        ts = now_iso()
+        placeholders = ",".join("?" * len(newly_deleted_ids))
+        conn.execute(f"UPDATE installed_games SET status='deleted', updated_at=? "
+                     f"WHERE id IN ({placeholders})", [ts, *newly_deleted_ids])
+    if delete_ids:
+        placeholders = ",".join("?" * len(delete_ids))
+        conn.execute(f"DELETE FROM installed_games WHERE id IN ({placeholders})", delete_ids)
+    if newly_deleted_ids or delete_ids:
         conn.commit()
     conn.close()
 
@@ -541,3 +615,162 @@ def delete_games_folder(folder_id):
     conn.execute("DELETE FROM games_folders WHERE id=?", (folder_id,))
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Blacklist - AppIDs the admin never wants requested again, with an optional
+# reason (admin-facing only, never shown to visitors). See app.py's
+# submit_request (the enforcement point) and /admin/blacklist.
+# ---------------------------------------------------------------------------
+def add_to_blacklist(steam_appid, name, reason=""):
+    """Returns the new row's id, or None if this appid is already
+    blacklisted (its UNIQUE constraint) - the caller reports that as a
+    friendly message rather than a raw IntegrityError."""
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO blacklist (steam_appid, name, reason, created_at) VALUES (?, ?, ?, ?)",
+            (steam_appid, name, reason, now_iso()))
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def list_blacklist():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM blacklist ORDER BY name, steam_appid").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_blacklist_entry(steam_appid):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM blacklist WHERE steam_appid=?", (steam_appid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def blacklist_map(appids):
+    """appid -> reason for every one of `appids` that's blacklisted - one
+    query for a whole page of search results instead of one per result, same
+    shape as active_request_appids() above."""
+    if not appids:
+        return {}
+    conn = get_db()
+    placeholders = ",".join("?" * len(appids))
+    rows = conn.execute(
+        f"SELECT steam_appid, reason FROM blacklist WHERE steam_appid IN ({placeholders})", appids).fetchall()
+    conn.close()
+    return {row["steam_appid"]: row["reason"] for row in rows}
+
+
+def is_blacklisted(steam_appid):
+    return get_blacklist_entry(steam_appid) is not None
+
+
+def remove_from_blacklist(blacklist_id):
+    conn = get_db()
+    conn.execute("DELETE FROM blacklist WHERE id=?", (blacklist_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Request limits - a global default (settings key below) plus a per-user
+# override table, mirroring Seerr's "global quota, per-user override" shape.
+# See app.py's submit_request (the enforcement point) and /admin/limits.
+# ---------------------------------------------------------------------------
+REQUEST_LIMIT_PERIODS = ("none", "daily", "weekly", "monthly")
+
+GLOBAL_REQUEST_LIMIT_PERIOD_SETTING = "global_request_limit_period"
+GLOBAL_REQUEST_LIMIT_COUNT_SETTING = "global_request_limit_count"
+
+
+def get_global_request_limit():
+    """(period, count) - period 'none' means unlimited (the default), in
+    which case count is meaningless and not read."""
+    period = get_setting(GLOBAL_REQUEST_LIMIT_PERIOD_SETTING, "none")
+    if period not in REQUEST_LIMIT_PERIODS:
+        period = "none"
+    raw_count = get_setting(GLOBAL_REQUEST_LIMIT_COUNT_SETTING, "0")
+    count = int(raw_count) if raw_count.isdigit() else 0
+    return period, count
+
+
+def set_global_request_limit(period, count):
+    if period not in REQUEST_LIMIT_PERIODS:
+        raise ValueError(f"Unknown request-limit period: {period!r}")
+    set_setting(GLOBAL_REQUEST_LIMIT_PERIOD_SETTING, period)
+    set_setting(GLOBAL_REQUEST_LIMIT_COUNT_SETTING, str(max(0, int(count))))
+
+
+def get_user_request_limit(requested_by_id):
+    """This user's own override (period, count), or None if they're governed
+    by the global limit instead."""
+    conn = get_db()
+    row = conn.execute("SELECT period, limit_count FROM user_request_limits WHERE requested_by_id=?",
+                        (requested_by_id,)).fetchone()
+    conn.close()
+    return (row["period"], row["limit_count"]) if row else None
+
+
+def set_user_request_limit(requested_by_id, requested_by_name, period, count):
+    if period not in REQUEST_LIMIT_PERIODS:
+        raise ValueError(f"Unknown request-limit period: {period!r}")
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO user_request_limits (requested_by_id, requested_by_name, period, limit_count, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(requested_by_id) DO UPDATE SET
+            requested_by_name=excluded.requested_by_name,
+            period=excluded.period,
+            limit_count=excluded.limit_count,
+            updated_at=excluded.updated_at
+    """, (requested_by_id, requested_by_name, period, max(0, int(count)), now_iso()))
+    conn.commit()
+    conn.close()
+
+
+def clear_user_request_limit(requested_by_id):
+    conn = get_db()
+    conn.execute("DELETE FROM user_request_limits WHERE requested_by_id=?", (requested_by_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_user_request_limits():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM user_request_limits ORDER BY requested_by_name, requested_by_id").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def distinct_requesters():
+    """Every visitor who has ever made a request, deduplicated by id - this
+    app has no synced Jellyfin user directory (see ROADMAP.md), so this list
+    is the only way the admin can pick a visitor to set a per-user limit
+    override for."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT requested_by_id, requested_by_name, MAX(created_at) AS last_requested_at
+        FROM requests GROUP BY requested_by_id ORDER BY requested_by_name
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def count_requests_since(requested_by_id, since_iso):
+    """How many non-rejected requests this visitor has made at or after
+    since_iso - a rejected request doesn't count against their quota, same
+    reasoning as get_active_request_for_appid() above: being told no
+    shouldn't also burn the visitor's limited requests for the period."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM requests WHERE requested_by_id=? AND status != 'rejected' "
+        "AND created_at >= ?", (requested_by_id, since_iso)).fetchone()
+    conn.close()
+    return row["n"]

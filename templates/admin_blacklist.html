@@ -1,0 +1,66 @@
+{% extends "admin_base.html" %}
+{% block title %}Blacklist — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">Blacklist</div>
+      <div class="topbar__sub">Games nobody can request, with an optional reason for your own records</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Blacklist a game</h2>
+    <p class="dim">Find the Steam AppID from its store page URL
+      (<code>store.steampowered.com/app/&lt;appid&gt;</code>). Blacklisting doesn't touch any
+      existing request for it - review those separately from <a href="{{ url_for('admin_requests') }}">Requests</a>.</p>
+    <form method="POST" action="{{ url_for('admin_blacklist_add') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="appid">Steam AppID</label>
+        <input type="number" name="appid" id="appid" min="1" required>
+      </div>
+      <div class="field">
+        <label for="reason">Reason (optional, admin-only - visitors never see this)</label>
+        <input type="text" name="reason" id="reason" maxlength="500" placeholder="Why this can't be requested">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Blacklist</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Blacklisted ({{ entries|length }})</h2>
+    {% if not entries %}
+      <p class="empty-state">Nothing blacklisted.</p>
+    {% endif %}
+    <div class="request-list">
+      {% for e in entries %}
+        <div class="request-row">
+          <div class="request-row__body">
+            <div class="request-row__title">{{ e.name }}</div>
+            <p class="request-row__meta">AppID {{ e.steam_appid }} · blacklisted {{ e.created_at }}
+              · <a href="https://store.steampowered.com/app/{{ e.steam_appid }}" target="_blank" rel="noopener">Steam page</a></p>
+            {% if e.reason %}
+              <p class="request-row__note">Reason: {{ e.reason }}</p>
+            {% endif %}
+          </div>
+          <form method="POST" action="{{ url_for('admin_blacklist_delete', entry_id=e.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn small danger"
+                    data-confirm="Remove &quot;{{ e.name }}&quot; from the blacklist? It becomes requestable again immediately.">Remove</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>
+{% endblock %}

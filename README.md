@@ -8,7 +8,8 @@ same server, same house style — separate repo).
 ## What it does
 
 - **Search**: a search bar hits Steam's public catalog and shows results (name,
-  icon, short description).
+  icon, short description). Every game shown anywhere in this app (search,
+  Recently added, Collections) links out to its own Steam store page.
 - **Request**: a small button next to each result sends a request — this app never
   downloads anything itself, it's purely the communication layer between whoever's
   asking and the admin. Requesting requires signing in with a Jellyfin account (the
@@ -25,9 +26,18 @@ same server, same house style — separate repo).
   "Games-folder scanner" below.
 - **Collections** (`/collections`): a public, browsable, filterable list of
   every game the scanner has recognized, pictures included - no sign-in
-  needed, same as search itself.
+  needed, same as search itself. Grouped into horizontally-scrolling,
+  Jellyfin-style rows by Steam genre (a game with more than one genre shows
+  up in each row it belongs to).
 - **Recently added**: the search page's landing view (no active search) shows
-  the most recently recognized games right under the search bar.
+  the most recently recognized games right under the search bar, as a
+  horizontally-scrolling rail - admin-configurable how many are shown (see
+  Folder Scanner settings).
+- **Blacklist**: the admin can block specific Steam AppIDs from ever being
+  requested, with an optional admin-only reason. See "Blacklist" below.
+- **Request limits**: an optional cap on how many games a visitor can
+  request per day/week/month - one global default plus a per-visitor
+  override, unlimited by default. See "Request limits" below.
 
 ## Running it
 
@@ -91,15 +101,58 @@ server scanning `D:\Games` might be reachable to everyone else on the network
 as `\\HOMESERVER\Games` or a different mapped drive letter entirely; left
 blank, the server's own path is shown as a fallback.
 
-Once a game is recognized, the search page shows an "available" badge instead
-of a Request button (with a "Where is it?" disclosure revealing the
-client-facing path), a duplicate request for it is refused, and it shows up
-on `/collections` and in the "Recently added" strip on the search page.
+Once a game is recognized, the search page shows an "Available" badge - or,
+if the folder's configured **label** is set, "Available on `<label>`" (e.g.
+"Available on SSD") - instead of a Request button, with a "Where is it?"
+disclosure revealing the client-facing path. A duplicate request for it is
+refused, and it shows up on `/collections` and in the "Recently added" rail
+on the search page. How many games that rail shows is admin-configurable
+from the Folder Scanner page's "Scan settings" panel (default 10).
 
 Under Docker, a folder still needs to be bind-mounted into the container
 first (see `docker-compose.yml`'s comments, including how to add more than
 one for multiple disks) - you then enter its *container-side* path into the
 admin UI, same as any other folder.
+
+**If a game's folder is deleted server-side** (outside this app entirely -
+someone freed up space by hand, say), the next scan notices it's gone and
+marks it **deleted** rather than silently forgetting it: it immediately
+stops counting as installed (so it's requestable again, and no longer
+shows up on Collections/Recently added), while the Folder Scanner page
+keeps a visible record of it under a "Deleted" panel until the admin
+dismisses it with "Forget" - or until the same tagged folder reappears on
+disk, at which point the next scan recognizes it and flips it straight
+back to "matched" on its own.
+
+## Blacklist
+
+From **Blacklist** in the admin nav: enter a Steam AppID (found in its
+store page URL) and an optional reason, admin-only - visitors never see
+it. A blacklisted game can't be requested by anyone; on the search page it
+shows a "blacklisted" badge with a "Why?" disclosure instead of a Request
+button. Blacklisting doesn't touch any request already made for that game -
+review those from Requests as usual. Removing an entry makes the game
+requestable again immediately.
+
+## Request limits
+
+From **Request Limits** in the admin nav: an optional cap on how many
+games one visitor can request in a rolling day/week/month, mirroring
+Jellyseerr's global-quota-plus-per-user-override shape.
+
+- **Global limit** applies to every visitor without their own override.
+  Unlimited by default.
+- **Per-user overrides** replace the global limit for one specific
+  visitor - set to "Use global" to clear an override. The list is every
+  Jellyfin user visible on Jellyfin's own login screen (a live,
+  unauthenticated call to `GET /Users/Public` - no API key needed, no
+  caching), so an override can be set before that person ever signs in
+  here, plus anyone who's made a request under an account no longer on
+  that list (deleted or hidden since).
+
+A rejected request never counts against a visitor's limit; hitting the
+limit shows a plain-language message on the search page rather than a
+generic error.
 
 ## Visual style
 

@@ -6,6 +6,8 @@
       <div class="admin-nav__brand">⚙ Admin</div>
       <a href="{{ url_for('admin_requests') }}" class="{{ 'active' if active == 'requests' }}">Requests</a>
       <a href="{{ url_for('admin_scanner') }}" class="{{ 'active' if active == 'scanner' }}">Folder Scanner</a>
+      <a href="{{ url_for('admin_blacklist') }}" class="{{ 'active' if active == 'blacklist' }}">Blacklist</a>
+      <a href="{{ url_for('admin_limits') }}" class="{{ 'active' if active == 'limits' }}">Request Limits</a>
       <a href="{{ url_for('admin_about') }}" class="{{ 'active' if active == 'about' }}">About</a>
       <a href="{{ url_for('admin_logout') }}" class="admin-nav__logout">Sign out</a>
     </nav>

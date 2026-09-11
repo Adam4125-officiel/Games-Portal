@@ -12,6 +12,10 @@ class _FakeResponse:
     def json(self):
         return self._json
 
+    def raise_for_status(self):
+        if not self.ok:
+            raise requests.HTTPError(f"{self.status_code} error")
+
 
 def test_is_enabled_reflects_config(monkeypatch):
     monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "")
@@ -91,6 +95,72 @@ def test_authenticate_never_persists_the_access_token(monkeypatch):
     monkeypatch.setattr(jellyfin_auth.requests, "post", fake_post)
     result = jellyfin_auth.authenticate("alice", "correct-password")
     assert "super-secret-token" not in str(result)
+
+
+def test_list_public_users_not_configured(monkeypatch):
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "")
+    assert jellyfin_auth.list_public_users() == {"ok": False, "users": []}
+
+
+def test_list_public_users_success(monkeypatch):
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+
+    def fake_get(url, **kwargs):
+        assert url == "http://jellyfin:8096/Users/Public"
+        return _FakeResponse([{"Id": "abc123", "Name": "alice"}, {"Id": "def456", "Name": "bob"}])
+
+    monkeypatch.setattr(jellyfin_auth.requests, "get", fake_get)
+    result = jellyfin_auth.list_public_users()
+    assert result == {"ok": True, "users": [{"id": "abc123", "name": "alice"},
+                                             {"id": "def456", "name": "bob"}]}
+
+
+def test_list_public_users_skips_entries_with_no_id(monkeypatch):
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse([{"Id": "abc123", "Name": "alice"}, {"Name": "no-id-somehow"}])
+
+    monkeypatch.setattr(jellyfin_auth.requests, "get", fake_get)
+    result = jellyfin_auth.list_public_users()
+    assert result == {"ok": True, "users": [{"id": "abc123", "name": "alice"}]}
+
+
+def test_list_public_users_unreachable(monkeypatch):
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+
+    def fake_get(url, **kwargs):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(jellyfin_auth.requests, "get", fake_get)
+    assert jellyfin_auth.list_public_users() == {"ok": False, "users": []}
+
+
+def test_list_public_users_rejects_an_unexpected_shape(monkeypatch):
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse({"not": "a list"})
+
+    monkeypatch.setattr(jellyfin_auth.requests, "get", fake_get)
+    assert jellyfin_auth.list_public_users() == {"ok": False, "users": []}
+
+
+def test_list_public_users_does_not_send_any_auth_header(monkeypatch):
+    """GET /Users/Public has no [Authorize] attribute in Jellyfin's own source
+    (verified at tags v10.7.0 and v12.0) - sending no auth header at all is
+    deliberate, not an oversight, so this pins that down."""
+    monkeypatch.setattr(jellyfin_auth.config, "JELLYFIN_URL", "http://jellyfin:8096")
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs)
+        return _FakeResponse([])
+
+    monkeypatch.setattr(jellyfin_auth.requests, "get", fake_get)
+    jellyfin_auth.list_public_users()
+    assert len(calls) == 1
+    assert "headers" not in calls[0]
 
 
 def test_revoke_uses_the_authorization_header_not_x_emby_token(monkeypatch):

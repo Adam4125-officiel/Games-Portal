@@ -24,30 +24,36 @@
 
   {% if recent %}
     <h2 class="section-heading">Recently added</h2>
-    <div class="results-grid">
-      {% for g in recent %}
-        <div class="result-card">
-          {% if g.icon_url %}
-            <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
-          {% else %}
-            <div class="result-card__icon result-card__icon--placeholder">🎮</div>
-          {% endif %}
-          <div class="result-card__body">
-            <div class="result-card__title">{{ g.name }}</div>
-            {% if g.short_description %}
-              <p class="result-card__desc">{{ g.short_description }}</p>
-            {% endif %}
-          </div>
-          {% if g.display_path %}
-            <div class="result-card__actions">
-              <details class="path-disclosure">
-                <summary>Where is it?</summary>
-                <code>{{ g.display_path }}</code>
-              </details>
+    <div class="rail" data-rail>
+      <button type="button" class="rail__arrow" data-rail-prev aria-label="Scroll left">‹</button>
+      <div class="rail__track" data-rail-track>
+        {% for g in recent %}
+          <div class="rail__item">
+            <div class="rail-card">
+              {% if g.icon_url %}
+                <img class="rail-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+              {% else %}
+                <div class="rail-card__icon rail-card__icon--placeholder">🎮</div>
+              {% endif %}
+              <div class="rail-card__title">{{ g.name }}</div>
+              {% if g.short_description %}
+                <p class="rail-card__desc">{{ g.short_description }}</p>
+              {% endif %}
+              <div class="rail-card__actions">
+                <span class="badge available literal">{{ 'Available on ' + g.folder_label if g.folder_label else 'Available' }}</span>
+                {% if g.display_path %}
+                  <details class="path-disclosure">
+                    <summary>Where is it?</summary>
+                    <code>{{ g.display_path }}</code>
+                  </details>
+                {% endif %}
+                <a class="steam-link" href="https://store.steampowered.com/app/{{ g.steam_appid }}" target="_blank" rel="noopener">Check out on Steam</a>
+              </div>
             </div>
-          {% endif %}
-        </div>
-      {% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="rail__arrow" data-rail-next aria-label="Scroll right">›</button>
     </div>
   {% endif %}
 
@@ -72,7 +78,23 @@
           {% endif %}
         </div>
         <div class="result-card__actions">
-          {% if r.existing_status %}
+          {% if r.existing_status == 'blacklisted' %}
+            <span class="badge blacklisted">blacklisted</span>
+            {% if r.blacklist_reason %}
+              <details class="path-disclosure">
+                <summary>Why?</summary>
+                <code>{{ r.blacklist_reason }}</code>
+              </details>
+            {% endif %}
+          {% elif r.existing_status == 'available' %}
+            <span class="badge available literal">{{ 'Available on ' + r.folder_label if r.folder_label else 'Available' }}</span>
+            {% if r.display_path %}
+              <details class="path-disclosure">
+                <summary>Where is it?</summary>
+                <code>{{ r.display_path }}</code>
+              </details>
+            {% endif %}
+          {% elif r.existing_status %}
             <span class="badge {{ r.existing_status }}">{{ r.existing_status }}</span>
             {% if r.display_path %}
               <details class="path-disclosure">
@@ -90,9 +112,13 @@
           {% elif jellyfin_enabled %}
             <a class="btn small secondary" href="{{ url_for('user_login', next=request.full_path.rstrip('?')) }}">Sign in to request</a>
           {% endif %}
+          <a class="steam-link" href="https://store.steampowered.com/app/{{ r.appid }}" target="_blank" rel="noopener">Check out on Steam</a>
         </div>
       </div>
     {% endfor %}
   </div>
+
+  <footer class="foot">games-portal {{ version_display }} · <a href="{{ repo_url }}" target="_blank" rel="noopener">Like this page? ⭐ Check it out on GitHub</a></footer>
 </div>
+<script src="{{ url_for('static', filename='js/rail_scroll.js') }}"></script>
 {% endblock %}

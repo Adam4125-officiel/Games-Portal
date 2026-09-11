@@ -68,10 +68,13 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # ---------------------------------------------------------------------------
 SCAN_INTERVAL_MINUTES_SETTING = "scanner_interval_minutes"
 FUZZY_THRESHOLD_SETTING = "scanner_fuzzy_match_threshold"
+RECENTLY_ADDED_COUNT_SETTING = "recently_added_count"
 
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
 DEFAULT_FUZZY_MATCH_THRESHOLD = 82
+DEFAULT_RECENTLY_ADDED_COUNT = 10
 MIN_SCAN_INTERVAL_SECONDS = 60
+MAX_RECENTLY_ADDED_COUNT = 50
 
 
 class ScannerError(Exception):
@@ -101,6 +104,24 @@ def client_path_for(root_path):
         if row["path"] == root_path:
             return row["client_path"].strip() or row["path"]
     return None
+
+
+def folder_label_for(root_path):
+    """This root's admin-set label ("SSD", "Main games drive", ...), or ""
+    if it has none or isn't configured any more. Powers the "Available on
+    <label>" badge (see app.py's _matched_games_by_appid) - falls back to a
+    plain "Available" badge when blank, same fallback shape as
+    client_path_for() above."""
+    for row in db.list_games_folders():
+        if row["path"] == root_path:
+            return row["label"].strip()
+    return ""
+
+
+def split_genres(genres):
+    """installed_games.genres (a comma-joined string, "" or NULL if none) ->
+    a plain list, for grouping /collections into genre rows."""
+    return [g for g in (genres or "").split(",") if g]
 
 
 def display_path_for_game(root_path, folder_name):
@@ -141,6 +162,22 @@ def fuzzy_match_threshold():
 
 def set_fuzzy_match_threshold(value):
     db.set_setting(FUZZY_THRESHOLD_SETTING, str(min(100, max(0, value))))
+
+
+def recently_added_count():
+    """How many games the public "Recently added" strip shows - admin-
+    editable from /admin/scanner, same DB-settings pattern as the interval/
+    threshold above."""
+    raw = db.get_setting(RECENTLY_ADDED_COUNT_SETTING, str(DEFAULT_RECENTLY_ADDED_COUNT))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = DEFAULT_RECENTLY_ADDED_COUNT
+    return min(MAX_RECENTLY_ADDED_COUNT, max(1, value))
+
+
+def set_recently_added_count(value):
+    db.set_setting(RECENTLY_ADDED_COUNT_SETTING, str(min(MAX_RECENTLY_ADDED_COUNT, max(1, int(value)))))
 
 
 def is_enabled():
@@ -207,24 +244,36 @@ def _best_fuzzy_candidate(folder_name):
     return {"appid": best["appid"], "name": best["name"], "score": score}
 
 
+def _join_genres(genres):
+    return ",".join(genres) if genres else ""
+
+
 def _cached_or_fetched_details(existing_row, appid):
-    """(name, icon_url, short_description) for a matched appid, shown on the
-    public /collections page. Reused from `existing_row` when it's already
-    cached for this same appid - a tagged folder never changes, so re-
-    fetching its details from Steam every scan cycle would be pure waste (and
-    unlike the fuzzy-match step, there's no confidence question here to
-    re-check). A fetch failure (Steam down, a delisted app) falls back to
-    whatever was already cached rather than blanking it out - a transient
-    outage must not erase a perfectly good cached name/icon."""
-    if existing_row and existing_row.get("steam_appid") == appid and existing_row.get("name"):
-        return existing_row["name"], existing_row["icon_url"], existing_row["short_description"]
+    """(name, icon_url, short_description, genres) for a matched appid, shown
+    on the public /collections page (genres also drives its genre-row
+    grouping). genres is a comma-joined string, matching the
+    installed_games.genres column, or "" if Steam listed none. Reused from
+    `existing_row` when it's already cached for this same appid *and* already
+    has a genres value - a row matched before the genres column existed has
+    name/icon/description cached but genres still NULL, and that None (not
+    "") is exactly what forces one backfill fetch the next time it's
+    scanned, rather than leaving it uncategorized forever. Otherwise, a
+    tagged folder never changes, so re-fetching every scan cycle would be
+    pure waste (and unlike the fuzzy-match step, there's no confidence
+    question here to re-check). A fetch failure (Steam down, a delisted app)
+    falls back to whatever was already cached rather than blanking it out -
+    a transient outage must not erase a perfectly good cached name/icon."""
+    if (existing_row and existing_row.get("steam_appid") == appid and existing_row.get("name")
+            and existing_row.get("genres") is not None):
+        return (existing_row["name"], existing_row["icon_url"], existing_row["short_description"],
+                existing_row["genres"])
     summary = steam.fetch_app_summary(appid)
     if summary:
-        return summary["name"], summary["icon_url"], summary["short_description"]
+        return summary["name"], summary["icon_url"], summary["short_description"], _join_genres(summary["genres"])
     if existing_row:
         return (existing_row.get("name"), existing_row.get("icon_url"),
-                existing_row.get("short_description"))
-    return None, None, None
+                existing_row.get("short_description"), existing_row.get("genres"))
+    return None, None, None, None
 
 
 def _resolved_matched_at(existing_row, appid):
@@ -279,11 +328,11 @@ def scan_once():
             tagged_appid = extract_tagged_appid(folder_name)
             if tagged_appid is not None:
                 existing = existing_by_key.get((root, folder_name))
-                name, icon_url, short_description = _cached_or_fetched_details(existing, tagged_appid)
+                name, icon_url, short_description, genres = _cached_or_fetched_details(existing, tagged_appid)
                 matched_at = _resolved_matched_at(existing, tagged_appid)
                 db.upsert_scanned_folder(root, folder_name, "matched", steam_appid=tagged_appid,
                                           name=name, icon_url=icon_url, short_description=short_description,
-                                          matched_at=matched_at)
+                                          matched_at=matched_at, genres=genres)
                 counts["matched"] += 1
                 continue
 
@@ -360,7 +409,8 @@ def confirm_match(row_id, appid):
 
     matched_at = _resolved_matched_at(row, appid)
     db.mark_folder_matched(row_id, new_name, appid, name=summary["name"], icon_url=summary["icon_url"],
-                            short_description=summary["short_description"], matched_at=matched_at)
+                            short_description=summary["short_description"], matched_at=matched_at,
+                            genres=_join_genres(summary["genres"]))
     return {"folder_name": new_name, "appid": appid, "name": summary["name"], "root_path": root}
 
 
