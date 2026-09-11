@@ -674,6 +674,68 @@ def test_admin_limits_clearing_an_override_reverts_to_global(admin_client):
     assert db.get_user_request_limit("jf-1") is None
 
 
+def test_admin_limits_lists_jellyfin_users_who_have_never_requested(admin_client, monkeypatch):
+    """A per-user override should be settable before that visitor ever signs
+    in here - the whole point of listing Jellyfin's own user directory
+    instead of only past requesters."""
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "list_public_users",
+                         lambda: {"ok": True, "users": [{"id": "jf-2", "name": "Bob"}]})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert resp.status_code == 200
+    assert b"Bob" in resp.data
+    assert b"Never requested" in resp.data
+
+
+def test_admin_limits_merges_jellyfin_users_with_past_requesters(admin_client, monkeypatch):
+    """A visitor known to both Jellyfin and this app's own requests table
+    must appear once, not twice - and keep their live Jellyfin name."""
+    import db
+    import jellyfin_auth
+    db.create_request(70, "Half-Life", "", "", "jf-1", "old-stored-name")
+    monkeypatch.setattr(jellyfin_auth, "list_public_users",
+                         lambda: {"ok": True, "users": [{"id": "jf-1", "name": "Alice"}]})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert resp.data.count(b"request-row__title") == 1
+    assert b"Alice" in resp.data
+    assert b"old-stored-name" not in resp.data
+    assert b"Last requested" in resp.data  # this one HAS requested before
+
+
+def test_admin_limits_keeps_a_requester_no_longer_on_jellyfins_public_list(admin_client, monkeypatch):
+    """An account since deleted or hidden in Jellyfin must not just vanish
+    from the override list if it still has an override or request history."""
+    import db
+    import jellyfin_auth
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    monkeypatch.setattr(jellyfin_auth, "list_public_users", lambda: {"ok": True, "users": []})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert b"Alice" in resp.data
+
+
+def test_admin_limits_flags_an_unreachable_jellyfin(admin_client, monkeypatch):
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "list_public_users", lambda: {"ok": False, "users": []})
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: True)
+
+    resp = admin_client.get("/admin/limits")
+    assert b"Couldn&#39;t reach Jellyfin" in resp.data or b"Couldn't reach Jellyfin" in resp.data
+
+
+def test_admin_limits_does_not_flag_jellyfin_when_not_configured(admin_client, monkeypatch):
+    import jellyfin_auth
+    monkeypatch.setattr(jellyfin_auth, "is_enabled", lambda: False)
+    resp = admin_client.get("/admin/limits")
+    assert b"Couldn&#39;t reach Jellyfin" not in resp.data
+    assert b"Couldn't reach Jellyfin" not in resp.data
+
+
 def test_admin_scanner_scan_runs_a_pass_and_flashes_a_summary(admin_client, monkeypatch, tmp_path):
     import db
     import scanner

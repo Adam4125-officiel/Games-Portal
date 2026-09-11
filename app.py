@@ -803,25 +803,57 @@ def admin_blacklist_delete(entry_id):
 # get_global_request_limit()/user_request_limits and app.py's
 # submit_request (the enforcement point, via _request_limit_error above).
 # ---------------------------------------------------------------------------
+def _known_users_for_limits():
+    """Every visitor worth showing an override control for: every Jellyfin
+    user Jellyfin itself will show on its own login screen, plus (as a
+    fallback for someone no longer in that list - an account since deleted
+    or hidden) anyone who has ever made a request here. A live, uncached
+    call to Jellyfin - the same "an explicit admin page view, not automatic
+    background polling" exception to CLAUDE.md's no-slow-I/O rule that
+    Steam search already is, not a new integrations table or sync task (see
+    ROADMAP.md on why this app doesn't have one of those yet).
+
+    Returns (users, jellyfin_unreachable) - the latter true only when
+    Jellyfin is configured but couldn't actually be asked, so the template
+    can tell the admin their per-user list might be incomplete right now
+    rather than silently showing just the requesters' fallback."""
+    result = jellyfin_auth.list_public_users()
+    jellyfin_unreachable = jellyfin_auth.is_enabled() and not result["ok"]
+
+    by_id = {u["id"]: {"id": u["id"], "name": u["name"], "last_requested_at": None} for u in result["users"]}
+    for requester in db.distinct_requesters():
+        existing = by_id.get(requester["requested_by_id"])
+        if existing:
+            existing["last_requested_at"] = requester["last_requested_at"]
+        else:
+            by_id[requester["requested_by_id"]] = {
+                "id": requester["requested_by_id"],
+                "name": requester["requested_by_name"],
+                "last_requested_at": requester["last_requested_at"],
+            }
+    return sorted(by_id.values(), key=lambda u: (u["name"] or "").lower()), jellyfin_unreachable
+
+
 @app.route("/admin/limits")
 @login_required
 def admin_limits():
     global_period, global_count = db.get_global_request_limit()
     overrides_by_id = {row["requested_by_id"]: row for row in db.list_user_request_limits()}
+    known_users, jellyfin_unreachable = _known_users_for_limits()
     users = []
-    for requester in db.distinct_requesters():
-        override = overrides_by_id.get(requester["requested_by_id"])
+    for known in known_users:
+        override = overrides_by_id.get(known["id"])
         users.append({
-            "id": requester["requested_by_id"],
-            "name": requester["requested_by_name"],
-            "last_requested_at": requester["last_requested_at"],
+            "id": known["id"],
+            "name": known["name"],
+            "last_requested_at": known["last_requested_at"],
             "override_period": override["period"] if override else "",
             "override_count": override["limit_count"] if override else "",
         })
     return render_template(
         "admin_limits.html", active="limits", users=users,
         global_period=global_period, global_count=global_count,
-        periods=db.REQUEST_LIMIT_PERIODS)
+        periods=db.REQUEST_LIMIT_PERIODS, jellyfin_unreachable=jellyfin_unreachable)
 
 
 @app.route("/admin/limits/global", methods=["POST"])

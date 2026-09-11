@@ -43,19 +43,26 @@
   <div class="panel">
     <h2>Per-user overrides</h2>
     <p class="dim">
-      Only visitors who have made at least one request appear here - this portal doesn't sync a
-      Jellyfin user directory (see the project roadmap), so there's no way to look one up before
-      that. "Use global" clears their override and returns them to the limit above.
+      Lists every Jellyfin user visible on its own login screen, live from Jellyfin - plus anyone
+      who has made a request here under an account no longer on that list (since deleted or
+      hidden). "Use global" clears an override and returns that visitor to the limit above.
     </p>
+    {% if jellyfin_unreachable %}
+      <p class="flash error">Couldn't reach Jellyfin just now, so this list may be missing
+        visitors who haven't requested anything yet - showing everyone else it already knows
+        about.</p>
+    {% endif %}
     {% if not users %}
-      <p class="empty-state">No visitor has made a request yet.</p>
+      <p class="empty-state">No visitor known yet.</p>
     {% endif %}
     <div class="request-list">
       {% for u in users %}
         <div class="request-row">
           <div class="request-row__body">
             <div class="request-row__title">{{ u.name }}</div>
-            <p class="request-row__meta">Last requested {{ u.last_requested_at }}</p>
+            <p class="request-row__meta">
+              {{ 'Last requested ' + u.last_requested_at if u.last_requested_at else 'Never requested' }}
+            </p>
             <p class="request-row__meta">
               {% if u.override_period %}
                 Override: {{ u.override_count }} per {{ u.override_period }}

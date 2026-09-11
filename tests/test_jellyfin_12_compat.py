@@ -56,6 +56,15 @@ def _build_standin_app(recorded):
             "AccessToken": FAKE_TOKEN,
         })
 
+    @app.get("/Users/Public")
+    def public_users():
+        # Real Jellyfin serves this with no [Authorize] attribute at all (see
+        # jellyfin_auth.list_public_users()'s docstring) - recorded so the test
+        # below can prove this app's own call never sent one either, the same
+        # "assert on what the server actually saw" spirit as logout() below.
+        recorded["public_users_had_auth_header"] = "Authorization" in request.headers
+        return jsonify([{"Id": FAKE_USER_ID, "Name": FAKE_USERNAME}])
+
     @app.post("/Sessions/Logout")
     def logout():
         # The 12.0 rule, enforced for real: only a Token="..." field inside the
@@ -107,6 +116,20 @@ def test_the_revoke_call_actually_satisfies_the_servers_12x_rule(jellyfin_12_sta
     jellyfin_auth.authenticate(FAKE_USERNAME, "whatever-password")
     assert recorded.get("logout_had_valid_12x_auth") is True
     assert recorded.get("logout_had_legacy_header") is False
+
+
+def test_list_public_users_against_a_real_running_server(jellyfin_12_standin, monkeypatch):
+    """Proves list_public_users() actually parses a real HTTP round trip (real
+    Flask JSON serialization, a real socket) end to end, not just a
+    hand-crafted mock - and that it sends no Authorization header at all,
+    which is what makes it unaffected by 12.0's legacy-auth change in the
+    first place (verified separately, straight from jellyfin/jellyfin's own
+    source - see the function's own docstring)."""
+    base_url, recorded = jellyfin_12_standin
+    monkeypatch.setattr(config, "JELLYFIN_URL", base_url)
+    result = jellyfin_auth.list_public_users()
+    assert result == {"ok": True, "users": [{"id": FAKE_USER_ID, "name": FAKE_USERNAME}]}
+    assert recorded.get("public_users_had_auth_header") is False
 
 
 def test_the_old_x_emby_token_only_pattern_would_be_caught_here(jellyfin_12_standin):

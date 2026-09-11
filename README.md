@@ -143,10 +143,12 @@ Jellyseerr's global-quota-plus-per-user-override shape.
 - **Global limit** applies to every visitor without their own override.
   Unlimited by default.
 - **Per-user overrides** replace the global limit for one specific
-  visitor - set to "Use global" to clear an override. Only visitors who
-  have made at least one request appear here, since this app doesn't sync
-  a Jellyfin user directory (see `ROADMAP.md`) and so has no other way to
-  know who they are ahead of time.
+  visitor - set to "Use global" to clear an override. The list is every
+  Jellyfin user visible on Jellyfin's own login screen (a live,
+  unauthenticated call to `GET /Users/Public` - no API key needed, no
+  caching), so an override can be set before that person ever signs in
+  here, plus anyone who's made a request under an account no longer on
+  that list (deleted or hidden since).
 
 A rejected request never counts against a visitor's limit; hitting the
 limit shows a plain-language message on the search page rather than a

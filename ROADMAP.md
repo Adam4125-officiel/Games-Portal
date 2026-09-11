@@ -62,9 +62,13 @@ works.
 - Jellyfin-backed sign-in is currently a single env var (`PORTAL_JELLYFIN_URL`),
   checked live on every sign-in with no cached user list — deliberately simpler
   than status-portal's `jellyfin_auth.py` (no integrations table, no sync task, no
-  offline/degraded sign-in mode, no admin-side revocation). Worth revisiting if
-  this app ever needs to gate visitor access per-user, or survive a Jellyfin outage
-  gracefully for new sign-ins the way status-portal does.
+  offline/degraded sign-in mode, no admin-side revocation). `/admin/limits` now
+  makes one live, uncached call to Jellyfin's own `Users/Public` (unauthenticated,
+  same list its login screen shows) to populate the per-user override list — that's
+  still not a directory sync (no caching, no admin-side revocation, nothing
+  persisted), just one on-demand read for one admin page. Worth revisiting for real
+  if this app ever needs more than that - gating visitor access per-user, or
+  surviving a Jellyfin outage gracefully for new sign-ins the way status-portal does.
 - Search is a full page reload (`GET /?q=...`), not live/incremental like
   status-portal's search-as-you-type. Simpler and avoids turning every keystroke
   into a Steam API call, but worth revisiting for UX if it feels slow in practice.
