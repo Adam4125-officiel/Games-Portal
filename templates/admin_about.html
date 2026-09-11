@@ -116,6 +116,18 @@
       </div>
       <p class="field-hint">Turn this off to stop the portal making any periodic outbound call -
         "Check now" still works on demand.</p>
+      <div class="field">
+        <label for="admin_session_timeout_hours">Sign out admins after (hours idle)</label>
+        <input type="number" min="0" max="{{ max_session_timeout_hours }}" name="admin_session_timeout_hours"
+               id="admin_session_timeout_hours" value="{{ admin_session_timeout_hours }}">
+        <p class="field-hint">0 disables the idle timeout - the session then lasts until the
+          30-day cookie itself expires.</p>
+      </div>
+      <div class="field">
+        <label for="user_session_timeout_hours">Sign out visitors after (hours idle)</label>
+        <input type="number" min="0" max="{{ max_session_timeout_hours }}" name="user_session_timeout_hours"
+               id="user_session_timeout_hours" value="{{ user_session_timeout_hours }}">
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn">Save</button>
       </div>

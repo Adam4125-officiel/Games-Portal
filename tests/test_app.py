@@ -166,6 +166,84 @@ def test_csrf_protection_rejects_missing_token(isolated_db):
 
 
 # ---------------------------------------------------------------------------
+# Session idle timeout
+# ---------------------------------------------------------------------------
+def test_admin_session_expires_after_the_idle_timeout(admin_client, monkeypatch):
+    real_now = app_module.time.time()
+    timeout = app_module._admin_session_timeout_seconds()
+    monkeypatch.setattr(app_module.time, "time", lambda: real_now + timeout + 1)
+
+    resp = admin_client.get("/admin/requests", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"session expired" in resp.data
+    assert b"Password" in resp.data  # rendered the login page, not the requests list
+
+
+def test_admin_session_stays_alive_within_the_idle_window(admin_client, monkeypatch):
+    real_now = app_module.time.time()
+    timeout = app_module._admin_session_timeout_seconds()
+    monkeypatch.setattr(app_module.time, "time", lambda: real_now + timeout - 5)
+
+    resp = admin_client.get("/admin/requests")
+    assert resp.status_code == 200
+
+
+def test_admin_session_timeout_of_zero_disables_expiry(admin_client, monkeypatch):
+    import db
+    db.set_setting("admin_session_timeout_hours", "0")
+    real_now = app_module.time.time()
+    # Well past any reasonable hours-based idle timeout, but still short of the
+    # 30-day cookie Max-Age itself - otherwise itsdangerous would reject the
+    # signed cookie as simply too old before this app's own hook ever runs,
+    # which would make the test pass for the wrong reason.
+    monkeypatch.setattr(app_module.time, "time", lambda: real_now + 29 * 24 * 3600)
+
+    resp = admin_client.get("/admin/requests")
+    assert resp.status_code == 200
+
+
+def test_expired_admin_post_redirects_to_login_instead_of_400ing(isolated_db):
+    """Uses a client with TESTING left off, so the real CSRF check runs too -
+    proving the timeout hook is registered before it, per its own docstring."""
+    app_module.app.config["TESTING"] = False
+    try:
+        with app_module.app.test_client() as c:
+            with c.session_transaction() as sess:
+                sess["logged_in"] = True
+                sess["last_seen"] = 0.0
+                sess["csrf_token"] = "test-token"
+            resp = c.post("/admin/requests/1/status",
+                           data={"csrf_token": "test-token", "status": "approved", "admin_note": ""})
+            assert resp.status_code == 302
+            assert "/admin/login" in resp.headers["Location"]
+    finally:
+        app_module.app.config["TESTING"] = True
+
+
+def test_visitor_session_expires_after_the_idle_timeout(visitor_session, monkeypatch):
+    real_now = app_module.time.time()
+    timeout = app_module._user_session_timeout_seconds()
+    monkeypatch.setattr(app_module.time, "time", lambda: real_now + timeout + 1)
+
+    resp = visitor_session.post("/request", data={"appid": "70", "next": "/"})
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+
+
+def test_visitor_session_stays_alive_within_the_idle_window(visitor_session, monkeypatch):
+    import steam
+
+    real_now = app_module.time.time()
+    timeout = app_module._user_session_timeout_seconds()
+    monkeypatch.setattr(app_module.time, "time", lambda: real_now + timeout - 5)
+    monkeypatch.setattr(steam, "fetch_app_summary", lambda appid: {
+        "appid": appid, "name": "Half-Life", "icon_url": "", "short_description": ""})
+
+    resp = visitor_session.post("/request", data={"appid": "70", "next": "/"}, follow_redirects=True)
+    assert b"Requested" in resp.data
+
+
+# ---------------------------------------------------------------------------
 # About / self-update
 # ---------------------------------------------------------------------------
 def test_admin_about_requires_login(client):
@@ -209,6 +287,25 @@ def test_admin_about_settings_saves_channel_and_check_enabled(admin_client):
     assert resp.status_code == 200
     assert updater.get_channel() == "unstable"
     assert updater.update_check_enabled() is False  # checkbox omitted = unchecked
+
+
+def test_admin_about_settings_saves_session_timeouts(admin_client):
+    import db
+    admin_client.post("/admin/about/settings",
+                       data={"update_channel": "stable",
+                             "admin_session_timeout_hours": "6",
+                             "user_session_timeout_hours": "48"})
+    assert db.get_setting("admin_session_timeout_hours") == "6"
+    assert db.get_setting("user_session_timeout_hours") == "48"
+
+
+def test_admin_about_settings_clamps_session_timeouts_to_the_cookie_lifetime(admin_client):
+    import db
+    absurd = app_module.MAX_SESSION_TIMEOUT_HOURS + 1000
+    admin_client.post("/admin/about/settings",
+                       data={"update_channel": "stable",
+                             "admin_session_timeout_hours": str(absurd)})
+    assert db.get_setting("admin_session_timeout_hours") == str(app_module.MAX_SESSION_TIMEOUT_HOURS)
 
 
 def test_admin_about_settings_rejects_an_unknown_channel(admin_client):

@@ -96,6 +96,77 @@ def _inject_globals():
     return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled()}
 
 
+# ---------------------------------------------------------------------------
+# Session idle timeout - admin and visitor sessions each expire after a period
+# of inactivity rather than staying valid for the full 30-day cookie lifetime
+# regardless of use. Both hooks are registered *before* _check_csrf below on
+# purpose: an admin POST arriving on an expired session must redirect to
+# sign-in, not fail the CSRF check with a bare 400 - the token being checked
+# lives in the very session being cleared here, so the other order turns
+# "your session expired" into an unexplained error page.
+# ---------------------------------------------------------------------------
+DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS = 12
+DEFAULT_USER_SESSION_TIMEOUT_HOURS = 168  # a week
+MAX_SESSION_TIMEOUT_HOURS = config.SESSION_COOKIE_MAX_AGE_DAYS * 24
+
+# The last-seen stamp is only rewritten once per this many seconds, not on
+# literally every request - that would re-sign and re-send the session cookie
+# on every single hit for no benefit finer than any timeout worth configuring.
+SESSION_TOUCH_INTERVAL_SECONDS = 60
+
+
+def _admin_session_timeout_seconds():
+    """0 (or a blank/invalid setting) means no idle timeout - the session then
+    lasts until the cookie's own Max-Age (config.SESSION_COOKIE_MAX_AGE_DAYS)
+    runs out, which is still a real, uniform expiry rather than "forever"."""
+    raw = db.get_setting("admin_session_timeout_hours", str(DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS))
+    hours = int(raw) if raw.isdigit() else DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS
+    if hours <= 0:
+        return None
+    return min(hours, MAX_SESSION_TIMEOUT_HOURS) * 3600
+
+
+def _user_session_timeout_seconds():
+    raw = db.get_setting("user_session_timeout_hours", str(DEFAULT_USER_SESSION_TIMEOUT_HOURS))
+    hours = int(raw) if raw.isdigit() else DEFAULT_USER_SESSION_TIMEOUT_HOURS
+    if hours <= 0:
+        return None
+    return min(hours, MAX_SESSION_TIMEOUT_HOURS) * 3600
+
+
+@app.before_request
+def _enforce_admin_session_timeout():
+    if not session.get("logged_in"):
+        return
+    session.permanent = True
+    timeout = _admin_session_timeout_seconds()
+    now = time.time()
+    last_seen = session.get("last_seen")
+    if timeout is not None and last_seen is not None and now - last_seen > timeout:
+        session.clear()
+        flash("Your session expired after a period of inactivity. Please sign in again.", "error")
+        return redirect(url_for("admin_login", next=request.path))
+    if last_seen is None or now - last_seen > SESSION_TOUCH_INTERVAL_SECONDS:
+        session["last_seen"] = now
+
+
+@app.before_request
+def _enforce_user_session_timeout():
+    """The visitor-session equivalent of the hook above, kept fully separate:
+    reads and clears only its own session keys, never touches `logged_in`."""
+    if not session.get("portal_user"):
+        return
+    session.permanent = True
+    timeout = _user_session_timeout_seconds()
+    now = time.time()
+    last_seen = session.get("portal_user_last_seen")
+    if timeout is not None and last_seen is not None and now - last_seen > timeout:
+        _end_user_session()
+        return
+    if last_seen is None or now - last_seen > SESSION_TOUCH_INTERVAL_SECONDS:
+        session["portal_user_last_seen"] = now
+
+
 @app.before_request
 def _check_csrf():
     if app.testing or request.method != "POST":
@@ -115,6 +186,7 @@ def is_first_run():
 def _start_admin_session():
     session.permanent = True
     session["logged_in"] = True
+    session["last_seen"] = time.time()
 
 
 def login_required(f):
@@ -156,10 +228,12 @@ def _register_login_success():
 def _start_user_session(user):
     session.permanent = True
     session["portal_user"] = {"id": user["id"], "name": user["name"]}
+    session["portal_user_last_seen"] = time.time()
 
 
 def _end_user_session():
     session.pop("portal_user", None)
+    session.pop("portal_user_last_seen", None)
 
 
 def current_user():
@@ -363,6 +437,7 @@ def admin_login():
 @app.route("/admin/logout")
 def admin_logout():
     session.pop("logged_in", None)
+    session.pop("last_seen", None)
     return redirect(url_for("index"))
 
 
@@ -414,6 +489,11 @@ def admin_about():
         platform_name=platform.platform(),
         app_root=config.APP_ROOT,
         db_path=db.DB_PATH,
+        admin_session_timeout_hours=db.get_setting(
+            "admin_session_timeout_hours", str(DEFAULT_ADMIN_SESSION_TIMEOUT_HOURS)),
+        user_session_timeout_hours=db.get_setting(
+            "user_session_timeout_hours", str(DEFAULT_USER_SESSION_TIMEOUT_HOURS)),
+        max_session_timeout_hours=MAX_SESSION_TIMEOUT_HOURS,
     )
 
 
@@ -444,6 +524,16 @@ def admin_about_settings():
         # actively misleading next to the newly-selected one.
         updater.clear_update_cache()
     updater.set_update_check_enabled(bool(request.form.get("update_check_enabled")))
+
+    admin_timeout_raw = request.form.get("admin_session_timeout_hours", "")
+    if admin_timeout_raw.isdigit():
+        db.set_setting("admin_session_timeout_hours",
+                        str(min(int(admin_timeout_raw), MAX_SESSION_TIMEOUT_HOURS)))
+    user_timeout_raw = request.form.get("user_session_timeout_hours", "")
+    if user_timeout_raw.isdigit():
+        db.set_setting("user_session_timeout_hours",
+                        str(min(int(user_timeout_raw), MAX_SESSION_TIMEOUT_HOURS)))
+
     flash("Preferences saved.", "success")
     return redirect(url_for("admin_about"))
 
