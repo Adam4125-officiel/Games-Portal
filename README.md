@@ -42,6 +42,19 @@ docker compose up -d --build
 The admin password is set on first visit to `/admin`. Without `PORTAL_JELLYFIN_URL`
 set, search still works but sign-in (and therefore requesting) is disabled.
 
+## Jellyfin compatibility
+
+Visitor sign-in works against Jellyfin **10.6 through 12.0** (the newest release
+as of this writing). Jellyfin 12.0 disables legacy authorization by default,
+which stops it reading the old `X-Emby-Token`/`X-MediaBrowser-Token` headers and
+the lowercase `api_key` query parameter - this app has never relied on any of
+those. It authenticates over the plain `Authorization: MediaBrowser ...,
+Token="..."` header, which every Jellyfin version back to 10.6 has read first,
+unconditionally - verified directly against `jellyfin/jellyfin`'s own source at
+tag `v12.0` (`AuthorizationContext.cs`), not just its release notes. Proven with
+a real local stand-in server that enforces 12.0's rule, not just a mocked one -
+see `tests/test_jellyfin_12_compat.py`.
+
 ## Visual style
 
 Same design language as status-portal — see `static/css/style.css` for the shared
