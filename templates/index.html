@@ -29,26 +29,25 @@
       <div class="rail__track" data-rail-track>
         {% for g in recent %}
           <div class="rail__item">
-            <div class="result-card">
+            <div class="rail-card">
               {% if g.icon_url %}
-                <img class="result-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
+                <img class="rail-card__icon" src="{{ g.icon_url }}" alt="" loading="lazy">
               {% else %}
-                <div class="result-card__icon result-card__icon--placeholder">🎮</div>
+                <div class="rail-card__icon rail-card__icon--placeholder">🎮</div>
               {% endif %}
-              <div class="result-card__body">
-                <div class="result-card__title">{{ g.name }}</div>
-                {% if g.short_description %}
-                  <p class="result-card__desc">{{ g.short_description }}</p>
-                {% endif %}
-              </div>
-              {% if g.display_path %}
-                <div class="result-card__actions">
+              <div class="rail-card__title">{{ g.name }}</div>
+              {% if g.short_description %}
+                <p class="rail-card__desc">{{ g.short_description }}</p>
+              {% endif %}
+              <div class="rail-card__actions">
+                <span class="badge available literal">{{ 'Available on ' + g.folder_label if g.folder_label else 'Available' }}</span>
+                {% if g.display_path %}
                   <details class="path-disclosure">
                     <summary>Where is it?</summary>
                     <code>{{ g.display_path }}</code>
                   </details>
-                </div>
-              {% endif %}
+                {% endif %}
+              </div>
             </div>
           </div>
         {% endfor %}
@@ -117,4 +116,5 @@
     {% endfor %}
   </div>
 </div>
+<script src="{{ url_for('static', filename='js/rail_scroll.js') }}"></script>
 {% endblock %}

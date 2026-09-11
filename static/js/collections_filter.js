@@ -10,7 +10,7 @@
   var noMatch = document.getElementById("collections-no-match");
   if (!input || !grid) return;
 
-  var cards = grid.querySelectorAll(".result-card");
+  var cards = grid.querySelectorAll(".rail-card");
   var rows = grid.querySelectorAll("[data-collection-row]");
 
   input.addEventListener("input", function () {
@@ -18,11 +18,13 @@
     var visible = 0;
     cards.forEach(function (card) {
       var matches = !term || (card.dataset.name || "").indexOf(term) !== -1;
-      card.hidden = !matches;
+      // The card's rail__item wrapper is what actually needs hiding - hiding
+      // the card alone would leave an empty gap where it sat in the track.
+      card.closest(".rail__item").hidden = !matches;
       if (matches) visible += 1;
     });
     rows.forEach(function (row) {
-      row.hidden = row.querySelector(".result-card:not([hidden])") === null;
+      row.hidden = row.querySelector(".rail__item:not([hidden])") === null;
     });
     if (noMatch) noMatch.hidden = visible !== 0;
   });

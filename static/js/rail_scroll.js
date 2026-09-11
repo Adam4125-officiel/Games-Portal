@@ -13,6 +13,14 @@
       return Math.max(track.clientWidth * 0.8, 200);
     }
 
+    // A row that already fits entirely doesn't need arrows at all - showing
+    // a pair that can't actually scroll anything just looks broken.
+    function updateArrows() {
+      var scrollable = track.scrollWidth > track.clientWidth + 1;
+      if (prev) prev.hidden = !scrollable;
+      if (next) next.hidden = !scrollable;
+    }
+
     if (prev) {
       prev.addEventListener("click", function () {
         track.scrollBy({ left: -scrollAmount(), behavior: "smooth" });
@@ -23,6 +31,9 @@
         track.scrollBy({ left: scrollAmount(), behavior: "smooth" });
       });
     }
+
+    updateArrows();
+    window.addEventListener("resize", updateArrows);
   }
 
   document.querySelectorAll("[data-rail]").forEach(initRail);

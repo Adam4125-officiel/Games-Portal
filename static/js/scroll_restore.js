@@ -8,6 +8,13 @@
 (function () {
   var KEY_PREFIX = "games-portal-scroll:";
 
+  // Without this, the browser's own automatic scroll restoration on a
+  // reload can fire after ours and stomp over it with its own idea of the
+  // position - this script is the sole authority instead.
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
   function storageKey() {
     return KEY_PREFIX + location.pathname + location.search;
   }
@@ -38,6 +45,10 @@
   } else {
     restore();
   }
+  // Restored again once everything (including lazy images further down the
+  // page) has settled - a page tall enough that a saved position exceeds
+  // its height-so-far at DOMContentLoaded would otherwise clamp short.
+  window.addEventListener("load", restore);
   // Both events, for browser coverage: Safari favors pagehide (and may skip
   // beforeunload on a real navigation), others still fire beforeunload.
   window.addEventListener("pagehide", save);

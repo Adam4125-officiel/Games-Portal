@@ -244,7 +244,7 @@ def test_collections_groups_games_into_genre_rows(client):
     assert b"Adventure" in resp.data
     assert b"Uncategorized" in resp.data
     # A game with two genres appears once per genre row it belongs to.
-    assert resp.data.count(b'result-card__title">Half-Life 2') == 2
+    assert resp.data.count(b'rail-card__title">Half-Life 2') == 2
 
 
 def test_collections_shows_available_on_the_folders_label(client):
@@ -282,7 +282,7 @@ def test_index_respects_the_admin_configured_recently_added_count(client):
                                   name=name, matched_at=db.now_iso())
 
     resp = client.get("/")
-    assert resp.data.count(b"result-card__title") == 1
+    assert resp.data.count(b"rail-card__title") == 1
 
 
 # ---------------------------------------------------------------------------
