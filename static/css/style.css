@@ -202,6 +202,13 @@ label { font-size: 0.85rem; color: var(--text-dim); display: block; margin-botto
   font-size: 1rem;
 }
 
+/* The icon shown is the mode a click switches *to*, not the current one -
+   driven entirely by CSS off the same [data-theme] attribute theme.js
+   already toggles, so it's always correct on first paint with no JS timing
+   involved (same "no flash" care as the theme choice itself). */
+:root:not([data-theme="light"]) .theme-toggle::before { content: "☀️"; }
+:root[data-theme="light"] .theme-toggle::before { content: "🌙"; }
+
 .user-chip {
   display: flex;
   align-items: center;
