@@ -520,3 +520,8 @@ network-failure message on the test button, and confirmed the two toggles
 persist independently in both directions.
 
 Released as `v1.3.0-rc.2`.
+
+### Confirmed stable; merged
+
+Confirmed end-to-end by Adam. Merged to `main` with a regular merge commit
+(`566cfd5`), branch deleted both sides. Released as `v1.3.0`.
