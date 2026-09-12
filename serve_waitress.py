@@ -15,6 +15,7 @@ from waitress import serve
 import config
 import db
 import scanner
+import status_portal_client
 import updater
 from app import app, LOG_FORMAT
 
@@ -31,5 +32,6 @@ if __name__ == "__main__":
     updater.check_pending_marker()
     updater.start_background_checker()
     scanner.start_background_scanner()
+    status_portal_client.start_background_worker()
     print(f"games-portal started on http://0.0.0.0:{config.PORT}")
     serve(app, host="0.0.0.0", port=config.PORT, threads=config.WAITRESS_THREADS)

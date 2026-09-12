@@ -38,6 +38,11 @@ same server, same house style — separate repo).
 - **Request limits**: an optional cap on how many games a visitor can
   request per day/week/month - one global default plus a per-visitor
   override, unlimited by default. See "Request limits" below.
+- **status-portal integration**: a health-check endpoint status-portal can
+  monitor, a permanent link back to status-portal in the page header, and
+  notification delegation (new requests and status changes are handed off to
+  status-portal instead of this app running its own Discord bot or email
+  sender). See "status-portal integration" below.
 
 ## Running it
 
@@ -153,6 +158,29 @@ Jellyseerr's global-quota-plus-per-user-override shape.
 A rejected request never counts against a visitor's limit; hitting the
 limit shows a plain-language message on the search page rather than a
 generic error.
+
+## status-portal integration
+
+From **Integrations** in the admin nav (`/admin/integrations`):
+
+- **Health check**: `GET /health` requires an `X-Api-Key` header (401 if
+  missing/wrong) and, once authenticated, always returns
+  `{"status": "ok", "version": "<VERSION>", "pending_requests": <int>}`. The
+  key is generated here (view/regenerate) and handed to status-portal by hand
+  - it's separate from every other secret in this app.
+- **Home links**: one or more (label, URL) pairs pointing at status-portal
+  (e.g. "LAN", "Tailscale", "Public"), rendered permanently in the top-left of
+  the page header. Nothing is shown if none are configured.
+- **Notification delegation**: instead of this app running its own Discord
+  bot or email sender, a new request POSTs to status-portal's
+  `/api/notify/admin`, and a request's status changing POSTs to
+  `/api/notify/user` (only when the request is tied to a signed-in Jellyfin
+  identity - an anonymous request's status change is never sent anywhere).
+  Both calls run on a background worker thread and are fire-and-forget: a
+  slow or unreachable status-portal is logged and otherwise invisible, never
+  surfaced as an error to the admin or the requester. The URL and API key
+  here are issued by status-portal - the opposite direction from, and kept
+  separate from, the health-check key above.
 
 ## Visual style
 

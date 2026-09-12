@@ -12,6 +12,13 @@
   <script src="{{ url_for('static', filename='js/scroll_restore.js') }}"></script>
 </head>
 <body>
+  {% if status_portal_links %}
+    <div class="home-links">
+      {% for l in status_portal_links %}
+        <a href="{{ l.url }}" target="_blank" rel="noopener">🏠 {{ l.label }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
   <div class="page-actions">
     {% if jellyfin_enabled and not request.path.startswith('/admin') %}
       {% if user %}

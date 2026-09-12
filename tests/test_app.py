@@ -1086,3 +1086,146 @@ def test_db_safety_snapshots_stay_inside_the_isolated_test_sandbox(isolated_db):
 
     assert backup_dir.startswith(os.path.dirname(db.DB_PATH))
     assert not backup_dir.startswith(real_instance_dir)
+
+
+# ---------------------------------------------------------------------------
+# status-portal integration: GET /health and /admin/integrations
+# ---------------------------------------------------------------------------
+def test_health_requires_api_key(client):
+    resp = client.get("/health")
+    assert resp.status_code == 401
+
+
+def test_health_rejects_wrong_key(client):
+    import db
+    db.regenerate_health_api_key()
+    resp = client.get("/health", headers={"X-Api-Key": "wrong-key"})
+    assert resp.status_code == 401
+
+
+def test_health_returns_status_version_and_pending_count(client):
+    import config
+    import db
+    key = db.regenerate_health_api_key()
+    db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    resp = client.get("/health", headers={"X-Api-Key": key})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["status"] == "ok"
+    assert body["version"] == config.VERSION
+    assert body["pending_requests"] == 1
+
+
+def test_admin_integrations_requires_login(client):
+    resp = client.get("/admin/integrations")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+
+
+def test_admin_integrations_page_generates_a_health_key_on_first_view(admin_client):
+    import db
+    assert db.get_health_api_key() is None
+    resp = admin_client.get("/admin/integrations")
+    assert resp.status_code == 200
+    key = db.get_health_api_key()
+    assert key
+    assert key.encode() in resp.data
+
+
+def test_admin_integrations_regenerate_health_key(admin_client):
+    import db
+    first = db.get_or_create_health_api_key()
+    resp = admin_client.post("/admin/integrations/health-key/regenerate", follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_health_api_key() != first
+
+
+def test_admin_integrations_add_update_delete_link(admin_client):
+    import db
+    resp = admin_client.post("/admin/integrations/links/add",
+                              data={"label": "LAN", "url": "http://192.168.1.10:5000"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    links = db.list_status_portal_links()
+    assert len(links) == 1
+    link_id = links[0]["id"]
+
+    resp = admin_client.post(f"/admin/integrations/links/{link_id}/update",
+                              data={"label": "Tailscale", "url": "http://100.64.0.1:5000"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_status_portal_link(link_id)["label"] == "Tailscale"
+
+    resp = admin_client.post(f"/admin/integrations/links/{link_id}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.list_status_portal_links() == []
+
+
+def test_admin_integrations_add_link_requires_both_fields(admin_client):
+    import db
+    admin_client.post("/admin/integrations/links/add", data={"label": "", "url": ""})
+    assert db.list_status_portal_links() == []
+
+
+def test_admin_integrations_update_link_404s_for_an_unknown_id(admin_client):
+    resp = admin_client.post("/admin/integrations/links/999999/update",
+                              data={"label": "x", "url": "http://x"})
+    assert resp.status_code == 404
+
+
+def test_admin_integrations_delete_link_404s_for_an_unknown_id(admin_client):
+    resp = admin_client.post("/admin/integrations/links/999999/delete")
+    assert resp.status_code == 404
+
+
+def test_admin_integrations_saves_notify_settings(admin_client):
+    import db
+    resp = admin_client.post("/admin/integrations/notify",
+                              data={"notify_url": "http://status-portal.local", "notify_api_key": "sp-key"},
+                              follow_redirects=True)
+    assert resp.status_code == 200
+    assert db.get_status_portal_notify_url() == "http://status-portal.local"
+    assert db.get_status_portal_notify_api_key() == "sp-key"
+
+
+def test_home_links_render_on_the_public_page_when_configured(client):
+    import db
+    db.add_status_portal_link("LAN", "http://192.168.1.10:5000")
+    resp = client.get("/")
+    assert b"LAN" in resp.data
+    assert b"192.168.1.10" in resp.data
+
+
+def test_home_links_hidden_when_none_configured(client):
+    resp = client.get("/")
+    assert b"home-links" not in resp.data
+
+
+def test_submit_request_notifies_status_portal(visitor_session, monkeypatch):
+    import db
+    import status_portal_client
+
+    calls = []
+    monkeypatch.setattr(status_portal_client, "notify_new_request", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr("steam.fetch_app_summary", lambda appid: {
+        "appid": appid, "name": "Half-Life", "icon_url": "", "short_description": ""})
+
+    visitor_session.post("/request", data={"appid": "70"})
+    assert calls == [(("Half-Life", "alice"), {})]
+
+
+def test_admin_update_request_notifies_status_portal_only_on_a_real_status_change(admin_client, monkeypatch):
+    import db
+    import status_portal_client
+
+    calls = []
+    monkeypatch.setattr(status_portal_client, "notify_status_changed",
+                         lambda *a, **k: calls.append((a, k)))
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "pending", "admin_note": ""})
+    assert calls == []
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "approved", "admin_note": ""})
+    assert calls == [(("jf-1", "Half-Life", "approved"), {})]

@@ -181,6 +181,19 @@ JELLYFIN_URL = os.environ.get("PORTAL_JELLYFIN_URL", "").strip()
 JELLYFIN_AUTH_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_JELLYFIN_AUTH_TIMEOUT_SECONDS", "10"))
 
 # ---------------------------------------------------------------------------
+# status-portal integration (see status_portal_client.py)
+# ---------------------------------------------------------------------------
+# Deliberately NOT here: the notify URL and the API key status-portal issues
+# for it (both DB settings, admin-editable from /admin/integrations - see
+# db.py's status_portal_notify_url/status_portal_notify_api_key). This is
+# just the HTTP timeout for that outbound call, same "technical tuning knob,
+# not routine admin business config" reasoning as JELLYFIN_AUTH_TIMEOUT_SECONDS
+# above - it always runs off the background worker thread, never inside a
+# request handler, so this bounds how long a job can hang, not how long a
+# visitor waits.
+STATUS_PORTAL_NOTIFY_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_STATUS_NOTIFY_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
 # Self-update (see updater.py / update.py)
 # ---------------------------------------------------------------------------
 # How often the background checker re-asks GitHub what the latest release is,

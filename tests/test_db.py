@@ -389,3 +389,59 @@ def test_count_requests_since_respects_the_window_start(isolated_db):
     import db
     db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
     assert db.count_requests_since("jf-1", "2999-01-01T00:00:00+00:00") == 0
+
+
+def test_count_unresolved_requests_excludes_done_and_rejected(isolated_db):
+    import db
+    id1 = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+    id2 = db.create_request(220, "Half-Life 2", "", "", "jf-1", "Alice")
+    db.create_request(620, "Portal 2", "", "", "jf-1", "Alice")
+    db.update_request_status(id1, "done", "")
+    db.update_request_status(id2, "rejected", "")
+
+    assert db.count_unresolved_requests() == 1
+
+
+def test_get_or_create_health_api_key_generates_once_and_persists(isolated_db):
+    import db
+    assert db.get_health_api_key() is None
+    key = db.get_or_create_health_api_key()
+    assert key
+    assert db.get_or_create_health_api_key() == key
+
+
+def test_regenerate_health_api_key_changes_the_key(isolated_db):
+    import db
+    first = db.get_or_create_health_api_key()
+    second = db.regenerate_health_api_key()
+    assert second != first
+    assert db.get_health_api_key() == second
+
+
+def test_status_portal_link_crud(isolated_db):
+    import db
+    link_id = db.add_status_portal_link("LAN", "http://192.168.1.10:5000")
+    assert db.list_status_portal_links() == [
+        {"id": link_id, "label": "LAN", "url": "http://192.168.1.10:5000",
+         "created_at": db.get_status_portal_link(link_id)["created_at"]}
+    ]
+
+    db.update_status_portal_link(link_id, "Tailscale", "http://100.64.0.1:5000")
+    updated = db.get_status_portal_link(link_id)
+    assert updated["label"] == "Tailscale"
+    assert updated["url"] == "http://100.64.0.1:5000"
+
+    db.delete_status_portal_link(link_id)
+    assert db.list_status_portal_links() == []
+    assert db.get_status_portal_link(link_id) is None
+
+
+def test_status_portal_notify_settings_roundtrip(isolated_db):
+    import db
+    assert db.get_status_portal_notify_url() == ""
+    assert db.get_status_portal_notify_api_key() == ""
+
+    db.set_status_portal_notify_url("http://status-portal.local")
+    db.set_status_portal_notify_api_key("sp-key-123")
+    assert db.get_status_portal_notify_url() == "http://status-portal.local"
+    assert db.get_status_portal_notify_api_key() == "sp-key-123"
