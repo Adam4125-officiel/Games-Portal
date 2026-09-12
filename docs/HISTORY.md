@@ -491,3 +491,32 @@ valid Flask session cookie with this app's own secret key, not by signing in
 against a real Jellyfin instance.
 
 Released as `v1.3.0-rc.1`.
+
+### rc.2 — a "Send test notification" button and per-event on/off toggles
+
+Two follow-ups from Adam after trying rc.1, relayed through status-portal's
+session (still acting as orchestrator for this batch), same PR/branch:
+
+- **"Send test notification"** on `/admin/integrations` fires one real,
+  synchronous call through `status_portal_client.send_test_notification()`
+  and flashes the actual result - success, "not configured," a non-2xx
+  response, or a network error verbatim - so an admin finds out immediately
+  whether the whole chain works instead of only when a real request fails to
+  notify anyone. Deliberately synchronous, unlike every other call in this
+  module: a sanctioned exception to the no-slow-I/O rule, same as the
+  scanner's "Scan now" button.
+- **Per-event toggles** (`notify_on_new_request`, `notify_on_status_change`,
+  both DB settings defaulting to enabled) let an admin turn either event off
+  independently, without touching the notify URL/key. An unchecked
+  checkbox sends no form field at all, which has to be read as "off," not
+  silently ignored - covered by
+  `test_admin_integrations_saves_notify_settings_with_both_toggles_off`.
+
+`pytest tests/` - 291 tests. Playwright screenshots of the updated
+`/admin/integrations` page at 1280px/375px in both themes, plus an explicit
+console/page-error check (none) - same as rc.1's own UI pass. A live smoke
+test against a running instance covered both the "not configured" and a real
+network-failure message on the test button, and confirmed the two toggles
+persist independently in both directions.
+
+Released as `v1.3.0-rc.2`.

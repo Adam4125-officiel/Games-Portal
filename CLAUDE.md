@@ -79,7 +79,15 @@ including a real false-negative bug caught and corrected mid-session.
   every call instant from the request handler's side - a slow or unreachable
   status-portal is logged and dropped, never surfaced to the admin or
   requester. The per-user call is skipped entirely when a request has no
-  `requested_by_id` (an anonymous request never had one to begin with).
+  `requested_by_id` (an anonymous request never had one to begin with). Each
+  of the two events has its own on/off toggle (`notify_on_new_request`,
+  `notify_on_status_change`, both default enabled) so an admin can disable
+  either independently without clearing the URL/key. A "Send test
+  notification" button on the same page fires one real, synchronous call
+  (`status_portal_client.send_test_notification()`) and shows the actual
+  result - the one deliberate exception to this module's otherwise-always-
+  fire-and-forget behavior, same "explicit one-shot admin action" carve-out
+  as the scanner's "Scan now" button.
 
 Two separate API keys, opposite directions, never reused for anything else:
 the health-check key is generated *by this app* and handed to status-portal;
