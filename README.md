@@ -3,56 +3,30 @@
 A personal portal to search Steam's catalog and request a game get downloaded onto
 a home server, sibling project to
 [status-portal](https://github.com/Adam4125-officiel/Status-Portal) (same author,
-same server, same house style — separate repo).
+same server, same house style — separate repo). It's purely a communication/
+tracking layer - no download logic of any kind lives in this app.
 
-## What it does
+- **Search** Steam's public catalog, no sign-in needed. **Request** a game with one
+  click once signed in with your Jellyfin account.
+- An **admin panel** tracks each request through to done, with a **games-folder
+  scanner** that auto-detects what's already installed so it's never re-requested.
+- A **blacklist** and optional **per-visitor request limits** keep things in check.
+- Integrates with [status-portal](https://github.com/Adam4125-officiel/Status-Portal)
+  for health monitoring, a home-page link, and notification delivery.
 
-- **Search**: a search bar hits Steam's public catalog and shows results (name,
-  icon, short description). Every game shown anywhere in this app (search,
-  Recently added, Collections) links out to its own Steam store page.
-- **Request**: a small button next to each result sends a request — this app never
-  downloads anything itself, it's purely the communication layer between whoever's
-  asking and the admin. Requesting requires signing in with a Jellyfin account (the
-  same Jellyfin your media server already runs) so a request is always attributable
-  to someone; search itself needs no sign-in.
-- **Admin panel**: review requests, change their status (pending → approved →
-  downloading → done, or rejected), leave a note, or delete a request outright.
-  Password-protected, same pattern as status-portal's `/admin`.
-- **My requests**: a signed-in visitor can see their own request history and
-  current statuses at `/my-requests` - scoped to their own data only.
-- **Auto-detection**: a background scan of one or more configured games folders
-  — one subfolder per installed game — recognizes what's already installed, so
-  it's never re-requested. Configured entirely from the admin UI. See
-  "Games-folder scanner" below.
-- **Collections** (`/collections`): a public, browsable, filterable list of
-  every game the scanner has recognized, pictures included - no sign-in
-  needed, same as search itself. Grouped into horizontally-scrolling,
-  Jellyfin-style rows by Steam genre (a game with more than one genre shows
-  up in each row it belongs to).
-- **Recently added**: the search page's landing view (no active search) shows
-  the most recently recognized games right under the search bar, as a
-  horizontally-scrolling rail - admin-configurable how many are shown (see
-  Folder Scanner settings).
-- **Blacklist**: the admin can block specific Steam AppIDs from ever being
-  requested, with an optional admin-only reason. See "Blacklist" below.
-- **Request limits**: an optional cap on how many games a visitor can
-  request per day/week/month - one global default plus a per-visitor
-  override, unlimited by default. See "Request limits" below.
-- **status-portal integration**: a health-check endpoint status-portal can
-  monitor, a permanent link back to status-portal in the page header, and
-  notification delegation (new requests and status changes are handed off to
-  status-portal instead of this app running its own Discord bot or email
-  sender). See "status-portal integration" below.
+See the **[wiki](https://github.com/Adam4125-officiel/Games-Portal/wiki)** for
+installation, configuration, a full admin-panel guide with screenshots, security
+notes, and everything else.
 
-## Running it
+## Quick start
 
 Native Python:
 
 ```
 pip install -r requirements.txt
 cp .env.example .env   # fill in PORTAL_JELLYFIN_URL to enable visitor sign-in
-python app.py           # dev server
-python serve_waitress.py   # production (run this one at system startup)
+python app.py               # dev server
+python serve_waitress.py    # production (run this one at system startup)
 ```
 
 Docker:
@@ -63,131 +37,10 @@ docker compose up -d --build
 ```
 
 The admin password is set on first visit to `/admin`. Without `PORTAL_JELLYFIN_URL`
-set, search still works but sign-in (and therefore requesting) is disabled.
-
-## Jellyfin compatibility
-
-Visitor sign-in works against Jellyfin **10.6 through 12.0** (the newest release
-as of this writing). Jellyfin 12.0 disables legacy authorization by default,
-which stops it reading the old `X-Emby-Token`/`X-MediaBrowser-Token` headers and
-the lowercase `api_key` query parameter - this app has never relied on any of
-those. It authenticates over the plain `Authorization: MediaBrowser ...,
-Token="..."` header, which every Jellyfin version back to 10.6 has read first,
-unconditionally - verified directly against `jellyfin/jellyfin`'s own source at
-tag `v12.0` (`AuthorizationContext.cs`), not just its release notes. Proven with
-a real local stand-in server that enforces 12.0's rule, not just a mocked one -
-see `tests/test_jellyfin_12_compat.py`.
-
-## Games-folder scanner
-
-Configured entirely from **Folder Scanner** in the admin nav - no `.env`
-editing or restart needed, same idea as Sonarr/Radarr's library scan. Add one
-or more root folders (one subfolder per installed game each; one entry per
-disk if your library spans more than one - each is scanned independently, so
-one being unplugged never affects the others), a scan interval, and a
-fuzzy-match confidence threshold, all editable live. Matching, in order:
-
-1. **A tag already in the folder name.** This app tags a folder as
-   `{steamapp-<appid>}` anywhere in its name, e.g. `Half-Life 2 {steamapp-220}`
-   - curly braces because they're filesystem-safe on Windows/Linux/macOS, and
-   deliberately echoing Sonarr's own real `{tvdb-<id>}` convention. A tagged
-   folder is recognized instantly, no network call needed.
-2. **A fuzzy match against Steam's catalog** for anything untagged. Never
-   auto-accepted - a confident guess (default confidence 82) shows up on the
-   Folder Scanner page as "awaiting review" for the admin to confirm or
-   correct. Confirming it (whichever way it was found) renames the folder on
-   disk to add the tag, so the next scan recognizes it directly instead of
-   fuzzy-matching it again.
-
-Each configured folder also has an optional **label** and **client path**.
-The client path is what a *visitor* is told when they ask "where is it?" on
-Collections or the search page - not necessarily the server's own path. A
-server scanning `D:\Games` might be reachable to everyone else on the network
-as `\\HOMESERVER\Games` or a different mapped drive letter entirely; left
-blank, the server's own path is shown as a fallback.
-
-Once a game is recognized, the search page shows an "Available" badge - or,
-if the folder's configured **label** is set, "Available on `<label>`" (e.g.
-"Available on SSD") - instead of a Request button, with a "Where is it?"
-disclosure revealing the client-facing path. A duplicate request for it is
-refused, and it shows up on `/collections` and in the "Recently added" rail
-on the search page. How many games that rail shows is admin-configurable
-from the Folder Scanner page's "Scan settings" panel (default 10).
-
-Under Docker, a folder still needs to be bind-mounted into the container
-first (see `docker-compose.yml`'s comments, including how to add more than
-one for multiple disks) - you then enter its *container-side* path into the
-admin UI, same as any other folder.
-
-**If a game's folder is deleted server-side** (outside this app entirely -
-someone freed up space by hand, say), the next scan notices it's gone and
-marks it **deleted** rather than silently forgetting it: it immediately
-stops counting as installed (so it's requestable again, and no longer
-shows up on Collections/Recently added), while the Folder Scanner page
-keeps a visible record of it under a "Deleted" panel until the admin
-dismisses it with "Forget" - or until the same tagged folder reappears on
-disk, at which point the next scan recognizes it and flips it straight
-back to "matched" on its own.
-
-## Blacklist
-
-From **Blacklist** in the admin nav: enter a Steam AppID (found in its
-store page URL) and an optional reason, admin-only - visitors never see
-it. A blacklisted game can't be requested by anyone; on the search page it
-shows a "blacklisted" badge with a "Why?" disclosure instead of a Request
-button. Blacklisting doesn't touch any request already made for that game -
-review those from Requests as usual. Removing an entry makes the game
-requestable again immediately.
-
-## Request limits
-
-From **Request Limits** in the admin nav: an optional cap on how many
-games one visitor can request in a rolling day/week/month, mirroring
-Jellyseerr's global-quota-plus-per-user-override shape.
-
-- **Global limit** applies to every visitor without their own override.
-  Unlimited by default.
-- **Per-user overrides** replace the global limit for one specific
-  visitor - set to "Use global" to clear an override. The list is every
-  Jellyfin user visible on Jellyfin's own login screen (a live,
-  unauthenticated call to `GET /Users/Public` - no API key needed, no
-  caching), so an override can be set before that person ever signs in
-  here, plus anyone who's made a request under an account no longer on
-  that list (deleted or hidden since).
-
-A rejected request never counts against a visitor's limit; hitting the
-limit shows a plain-language message on the search page rather than a
-generic error.
-
-## status-portal integration
-
-From **Integrations** in the admin nav (`/admin/integrations`):
-
-- **Health check**: `GET /health` requires an `X-Api-Key` header (401 if
-  missing/wrong) and, once authenticated, always returns
-  `{"status": "ok", "version": "<VERSION>", "pending_requests": <int>}`. The
-  key is generated here (view/regenerate) and handed to status-portal by hand
-  - it's separate from every other secret in this app.
-- **Home links**: one or more (label, URL) pairs pointing at status-portal
-  (e.g. "LAN", "Tailscale", "Public"), rendered permanently in the top-left of
-  the page header. Nothing is shown if none are configured.
-- **Notification delegation**: instead of this app running its own Discord
-  bot or email sender, a new request POSTs to status-portal's
-  `/api/notify/admin`, and a request's status changing POSTs to
-  `/api/notify/user` (only when the request is tied to a signed-in Jellyfin
-  identity - an anonymous request's status change is never sent anywhere).
-  Both calls run on a background worker thread and are fire-and-forget: a
-  slow or unreachable status-portal is logged and otherwise invisible, never
-  surfaced as an error to the admin or the requester. The URL and API key
-  here are issued by status-portal - the opposite direction from, and kept
-  separate from, the health-check key above.
-- **Per-event toggles**: new-request and status-change notifications can
-  each be switched off independently, without clearing the URL/key - both
-  default to enabled.
-- **Send test notification**: fires one real, synchronous call through the
-  chain above and reports the actual result, so a broken connection to
-  status-portal is obvious immediately rather than only discovered when a
-  real request fails to notify anyone.
+set, search still works but sign-in (and therefore requesting) is disabled. See the
+wiki's **[Installation and Setup](https://github.com/Adam4125-officiel/Games-Portal/wiki/Installation-and-Setup)**
+page for the rest - session durations, Jellyfin compatibility, and publishing
+beyond your LAN.
 
 ## Visual style
 
