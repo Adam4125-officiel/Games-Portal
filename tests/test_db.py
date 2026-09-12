@@ -445,3 +445,21 @@ def test_status_portal_notify_settings_roundtrip(isolated_db):
     db.set_status_portal_notify_api_key("sp-key-123")
     assert db.get_status_portal_notify_url() == "http://status-portal.local"
     assert db.get_status_portal_notify_api_key() == "sp-key-123"
+
+
+def test_notify_on_new_request_defaults_enabled(isolated_db):
+    import db
+    assert db.notify_on_new_request_enabled() is True
+    db.set_notify_on_new_request_enabled(False)
+    assert db.notify_on_new_request_enabled() is False
+    db.set_notify_on_new_request_enabled(True)
+    assert db.notify_on_new_request_enabled() is True
+
+
+def test_notify_on_status_change_defaults_enabled(isolated_db):
+    import db
+    assert db.notify_on_status_change_enabled() is True
+    db.set_notify_on_status_change_enabled(False)
+    assert db.notify_on_status_change_enabled() is False
+    db.set_notify_on_status_change_enabled(True)
+    assert db.notify_on_status_change_enabled() is True

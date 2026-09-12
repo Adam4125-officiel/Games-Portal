@@ -104,14 +104,35 @@
         <label for="notify_api_key">API key (from status-portal)</label>
         <input type="text" name="notify_api_key" id="notify_api_key" value="{{ notify_api_key }}" maxlength="200">
       </div>
+      <div class="field-check">
+        <input type="checkbox" name="notify_on_new_request" id="notify_on_new_request"
+               {{ 'checked' if notify_on_new_request }}>
+        <label for="notify_on_new_request">Notify on a new request (admin alert)</label>
+      </div>
+      <div class="field-check">
+        <input type="checkbox" name="notify_on_status_change" id="notify_on_status_change"
+               {{ 'checked' if notify_on_status_change }}>
+        <label for="notify_on_status_change">Notify on a request's status changing (per-requester alert)</label>
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn">Save</button>
       </div>
     </form>
     <p class="field-hint">
       Leave the URL or key blank to disable delegation entirely - nothing is sent, and nothing
-      breaks, same as before this was configured.
+      breaks, same as before this was configured. Unchecking one of the events above disables just
+      that one; the other keeps working.
     </p>
+
+    <h3 class="panel__subhead">Test it</h3>
+    <p class="dim">
+      Sends one real notification through the chain above right now, so you find out immediately if
+      it's broken instead of only when a real request comes in.
+    </p>
+    <form method="POST" action="{{ url_for('admin_integrations_notify_test') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary">Send test notification</button>
+    </form>
   </div>
 
   <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>

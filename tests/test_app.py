@@ -1182,11 +1182,24 @@ def test_admin_integrations_delete_link_404s_for_an_unknown_id(admin_client):
 def test_admin_integrations_saves_notify_settings(admin_client):
     import db
     resp = admin_client.post("/admin/integrations/notify",
-                              data={"notify_url": "http://status-portal.local", "notify_api_key": "sp-key"},
+                              data={"notify_url": "http://status-portal.local", "notify_api_key": "sp-key",
+                                    "notify_on_new_request": "on", "notify_on_status_change": "on"},
                               follow_redirects=True)
     assert resp.status_code == 200
     assert db.get_status_portal_notify_url() == "http://status-portal.local"
     assert db.get_status_portal_notify_api_key() == "sp-key"
+    assert db.notify_on_new_request_enabled() is True
+    assert db.notify_on_status_change_enabled() is True
+
+
+def test_admin_integrations_saves_notify_settings_with_both_toggles_off(admin_client):
+    """An unchecked checkbox sends no form field at all - this must be read
+    as "off," not silently ignored and left at its previous value."""
+    import db
+    admin_client.post("/admin/integrations/notify",
+                       data={"notify_url": "http://status-portal.local", "notify_api_key": "sp-key"})
+    assert db.notify_on_new_request_enabled() is False
+    assert db.notify_on_status_change_enabled() is False
 
 
 def test_home_links_render_on_the_public_page_when_configured(client):
@@ -1229,3 +1242,55 @@ def test_admin_update_request_notifies_status_portal_only_on_a_real_status_chang
 
     admin_client.post(f"/admin/requests/{rid}/status", data={"status": "approved", "admin_note": ""})
     assert calls == [(("jf-1", "Half-Life", "approved"), {})]
+
+
+def test_submit_request_respects_the_new_request_toggle_when_off(visitor_session, monkeypatch):
+    import db
+    import status_portal_client
+
+    db.set_notify_on_new_request_enabled(False)
+    calls = []
+    monkeypatch.setattr(status_portal_client, "notify_new_request", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr("steam.fetch_app_summary", lambda appid: {
+        "appid": appid, "name": "Half-Life", "icon_url": "", "short_description": ""})
+
+    visitor_session.post("/request", data={"appid": "70"})
+    assert calls == []
+
+
+def test_admin_update_request_respects_the_status_change_toggle_when_off(admin_client, monkeypatch):
+    import db
+    import status_portal_client
+
+    db.set_notify_on_status_change_enabled(False)
+    calls = []
+    monkeypatch.setattr(status_portal_client, "notify_status_changed",
+                         lambda *a, **k: calls.append((a, k)))
+    rid = db.create_request(70, "Half-Life", "", "", "jf-1", "Alice")
+
+    admin_client.post(f"/admin/requests/{rid}/status", data={"status": "approved", "admin_note": ""})
+    assert calls == []
+
+
+def test_admin_integrations_notify_test_reports_success(admin_client, monkeypatch):
+    import status_portal_client
+    monkeypatch.setattr(status_portal_client, "send_test_notification",
+                         lambda: {"ok": True, "message": "Delivered - status-portal returned 200."})
+    resp = admin_client.post("/admin/integrations/notify/test", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Delivered" in resp.data
+
+
+def test_admin_integrations_notify_test_reports_failure(admin_client, monkeypatch):
+    import status_portal_client
+    monkeypatch.setattr(status_portal_client, "send_test_notification",
+                         lambda: {"ok": False, "message": "Not configured - set a notify URL and API key first."})
+    resp = admin_client.post("/admin/integrations/notify/test", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Not configured" in resp.data
+
+
+def test_admin_integrations_notify_test_requires_login(client):
+    resp = client.post("/admin/integrations/notify/test")
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]

@@ -53,10 +53,19 @@ def _process_one(job):
         _logger.warning("status-portal notify delivery failed (%s)", job["path"], exc_info=True)
 
 
-def _deliver(job):
+def _notify_target():
+    """(url, api_key) as currently configured, url without a trailing slash -
+    or (None, None) if either is unset."""
     url = db.get_status_portal_notify_url().rstrip("/")
     api_key = db.get_status_portal_notify_api_key()
     if not url or not api_key:
+        return None, None
+    return url, api_key
+
+
+def _deliver(job):
+    url, api_key = _notify_target()
+    if url is None:
         _logger.debug("status-portal notify skipped - not configured yet (%s)", job["path"])
         return
     resp = requests.post(f"{url}{job['path']}", json=job["payload"],
@@ -65,6 +74,29 @@ def _deliver(job):
     if resp.status_code >= 400:
         _logger.warning("status-portal notify %s returned %s: %s",
                          job["path"], resp.status_code, resp.text[:300])
+
+
+def send_test_notification():
+    """Synchronous, unlike everything else in this module - an admin pressing
+    "Send test notification" wants to know right away whether the whole
+    chain actually works, not "queued, check the logs later." A sanctioned
+    exception to the no-slow-I/O-in-a-request-handler rule, same as an
+    explicit one-shot "Scan now" button (see CLAUDE.md). Returns
+    {"ok": bool, "message": str} - never raises."""
+    url, api_key = _notify_target()
+    if url is None:
+        return {"ok": False, "message": "Not configured - set a notify URL and API key first."}
+    payload = {"event": "test", "subject": "Games Portal test notification",
+               "body": "This is a test notification from Games Portal's Integrations page."}
+    try:
+        resp = requests.post(f"{url}/api/notify/admin", json=payload,
+                              headers={"X-Api-Key": api_key},
+                              timeout=config.STATUS_PORTAL_NOTIFY_TIMEOUT_SECONDS)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "message": f"Could not reach status-portal: {e}"}
+    if resp.status_code >= 400:
+        return {"ok": False, "message": f"status-portal returned {resp.status_code}: {resp.text[:300]}"}
+    return {"ok": True, "message": f"Delivered - status-portal returned {resp.status_code}."}
 
 
 def notify_new_request(game_name, requester_name):

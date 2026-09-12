@@ -895,3 +895,27 @@ def get_status_portal_notify_api_key():
 
 def set_status_portal_notify_api_key(key):
     set_setting(STATUS_PORTAL_NOTIFY_API_KEY_SETTING, key)
+
+
+# Per-event on/off toggles - both default enabled (matches this feature's
+# behavior before these toggles existed), so an admin who never visits this
+# setting keeps getting notified exactly as before. Same "1"/"0" string
+# convention as updater.py's update_check_enabled().
+NOTIFY_ON_NEW_REQUEST_SETTING = "notify_on_new_request"
+NOTIFY_ON_STATUS_CHANGE_SETTING = "notify_on_status_change"
+
+
+def notify_on_new_request_enabled():
+    return get_setting(NOTIFY_ON_NEW_REQUEST_SETTING, "1") != "0"
+
+
+def set_notify_on_new_request_enabled(enabled):
+    set_setting(NOTIFY_ON_NEW_REQUEST_SETTING, "1" if enabled else "0")
+
+
+def notify_on_status_change_enabled():
+    return get_setting(NOTIFY_ON_STATUS_CHANGE_SETTING, "1") != "0"
+
+
+def set_notify_on_status_change_enabled(enabled):
+    set_setting(NOTIFY_ON_STATUS_CHANGE_SETTING, "1" if enabled else "0")

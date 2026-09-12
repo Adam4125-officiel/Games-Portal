@@ -102,3 +102,54 @@ def test_process_one_swallows_a_delivery_failure(isolated_db, monkeypatch):
     status_portal_client.notify_new_request("Half-Life", "Alice")
     job = status_portal_client._queue.get_nowait()
     status_portal_client._process_one(job)  # must not raise
+
+
+def test_send_test_notification_when_not_configured(isolated_db):
+    result = status_portal_client.send_test_notification()
+    assert result == {"ok": False, "message": "Not configured - set a notify URL and API key first."}
+
+
+def test_send_test_notification_success(isolated_db, monkeypatch):
+    import db
+    db.set_status_portal_notify_url("http://status-portal.local")
+    db.set_status_portal_notify_api_key("sp-key")
+
+    calls = []
+
+    def fake_post(url, json, headers, timeout):
+        calls.append({"url": url, "json": json, "headers": headers})
+        return _FakeResponse(status_code=200)
+
+    monkeypatch.setattr(status_portal_client.requests, "post", fake_post)
+    result = status_portal_client.send_test_notification()
+
+    assert result["ok"] is True
+    assert "200" in result["message"]
+    assert calls[0]["url"] == "http://status-portal.local/api/notify/admin"
+    assert calls[0]["headers"] == {"X-Api-Key": "sp-key"}
+    assert calls[0]["json"]["event"] == "test"
+
+
+def test_send_test_notification_reports_a_non_2xx_response(isolated_db, monkeypatch):
+    import db
+    db.set_status_portal_notify_url("http://status-portal.local")
+    db.set_status_portal_notify_api_key("wrong-key")
+    monkeypatch.setattr(status_portal_client.requests, "post",
+                         lambda *a, **k: _FakeResponse(status_code=401, text="bad key"))
+
+    result = status_portal_client.send_test_notification()
+    assert result["ok"] is False
+    assert "401" in result["message"]
+
+
+def test_send_test_notification_reports_a_network_exception_without_raising(isolated_db, monkeypatch):
+    import db
+    db.set_status_portal_notify_url("http://status-portal.local")
+    db.set_status_portal_notify_api_key("sp-key")
+    monkeypatch.setattr(status_portal_client.requests, "post",
+                         lambda *a, **k: (_ for _ in ()).throw(
+                             status_portal_client.requests.exceptions.ConnectionError("unreachable")))
+
+    result = status_portal_client.send_test_notification()
+    assert result["ok"] is False
+    assert "unreachable" in result["message"]
