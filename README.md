@@ -6,6 +6,11 @@ a home server, sibling project to
 same server, same house style — separate repo). It's purely a communication/
 tracking layer - no download logic of any kind lives in this app.
 
+<p>
+  <img src="docs/screenshots/search.png" alt="Search page with recently added games" width="49%">
+  <img src="docs/screenshots/admin-requests.png" alt="Admin requests page" width="49%">
+</p>
+
 - **Search** Steam's public catalog, no sign-in needed. **Request** a game with one
   click once signed in with your Jellyfin account.
 - An **admin panel** tracks each request through to done, with a **games-folder
