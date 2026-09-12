@@ -3,6 +3,7 @@ db.py — The entire database layer (SQLite). No ORM, plain SQL, hand-rolled
 schema management: see CLAUDE.md's "No ORM, no migration framework" rule.
 """
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 
@@ -259,6 +260,19 @@ def init_db():
             period TEXT NOT NULL,
             limit_count INTEGER NOT NULL,
             updated_at TEXT NOT NULL
+        )
+    """)
+
+    # One row per (label, url) pointing back at status-portal - this server's
+    # "home". Purely a display list for the admin-configured header link (see
+    # app.py's /admin/integrations and base.html) - status-portal itself never
+    # reads this table; it's not part of the health/notify contract.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS status_portal_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            url TEXT NOT NULL,
+            created_at TEXT NOT NULL
         )
     """)
 
@@ -774,3 +788,134 @@ def count_requests_since(requested_by_id, since_iso):
         "AND created_at >= ?", (requested_by_id, since_iso)).fetchone()
     conn.close()
     return row["n"]
+
+
+def count_unresolved_requests():
+    """Requests still awaiting action - not yet 'done' or 'rejected'. Powers
+    /health's optional pending_requests count for status-portal."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM requests WHERE status NOT IN ('done', 'rejected')").fetchone()
+    conn.close()
+    return row["n"]
+
+
+# ---------------------------------------------------------------------------
+# status-portal integration - health-check API key (see app.py's GET /health)
+# and the admin-configured "home" links rendered in the page header (see
+# base.html). Both are DB-backed, admin-editable from /admin/integrations -
+# not env vars, so setting them up needs no restart, same reasoning as every
+# other admin-tunable toggle in this app (see CLAUDE.md's "Config split").
+# ---------------------------------------------------------------------------
+HEALTH_API_KEY_SETTING = "health_api_key"
+
+
+def get_health_api_key():
+    return get_setting(HEALTH_API_KEY_SETTING)
+
+
+def regenerate_health_api_key():
+    key = secrets.token_hex(32)
+    set_setting(HEALTH_API_KEY_SETTING, key)
+    return key
+
+
+def get_or_create_health_api_key():
+    """Returns the current key, generating one on first use so the admin
+    always has something to view/copy on their very first visit to
+    /admin/integrations rather than an empty field with no way to fill it in
+    short of pressing "Regenerate" once first."""
+    key = get_health_api_key()
+    if not key:
+        key = regenerate_health_api_key()
+    return key
+
+
+def add_status_portal_link(label, url):
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO status_portal_links (label, url, created_at) VALUES (?, ?, ?)",
+        (label, url, now_iso()))
+    conn.commit()
+    new_id = cur.lastrowid
+    conn.close()
+    return new_id
+
+
+def list_status_portal_links():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM status_portal_links ORDER BY id").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_status_portal_link(link_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM status_portal_links WHERE id=?", (link_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_status_portal_link(link_id, label, url):
+    conn = get_db()
+    conn.execute("UPDATE status_portal_links SET label=?, url=? WHERE id=?", (label, url, link_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_status_portal_link(link_id):
+    conn = get_db()
+    conn.execute("DELETE FROM status_portal_links WHERE id=?", (link_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# status-portal integration - notification delegation (see
+# status_portal_client.py). Different direction, different secret, from the
+# health API key above: that key is one *this* app issues for status-portal to
+# call in; this one status-portal issues for *this* app to call out with.
+# Both DB-backed, admin-editable from /admin/integrations, no restart needed.
+# ---------------------------------------------------------------------------
+STATUS_PORTAL_NOTIFY_URL_SETTING = "status_portal_notify_url"
+STATUS_PORTAL_NOTIFY_API_KEY_SETTING = "status_portal_notify_api_key"
+
+
+def get_status_portal_notify_url():
+    return get_setting(STATUS_PORTAL_NOTIFY_URL_SETTING, "") or ""
+
+
+def set_status_portal_notify_url(url):
+    set_setting(STATUS_PORTAL_NOTIFY_URL_SETTING, url)
+
+
+def get_status_portal_notify_api_key():
+    return get_setting(STATUS_PORTAL_NOTIFY_API_KEY_SETTING, "") or ""
+
+
+def set_status_portal_notify_api_key(key):
+    set_setting(STATUS_PORTAL_NOTIFY_API_KEY_SETTING, key)
+
+
+# Per-event on/off toggles - both default enabled (matches this feature's
+# behavior before these toggles existed), so an admin who never visits this
+# setting keeps getting notified exactly as before. Same "1"/"0" string
+# convention as updater.py's update_check_enabled().
+NOTIFY_ON_NEW_REQUEST_SETTING = "notify_on_new_request"
+NOTIFY_ON_STATUS_CHANGE_SETTING = "notify_on_status_change"
+
+
+def notify_on_new_request_enabled():
+    return get_setting(NOTIFY_ON_NEW_REQUEST_SETTING, "1") != "0"
+
+
+def set_notify_on_new_request_enabled(enabled):
+    set_setting(NOTIFY_ON_NEW_REQUEST_SETTING, "1" if enabled else "0")
+
+
+def notify_on_status_change_enabled():
+    return get_setting(NOTIFY_ON_STATUS_CHANGE_SETTING, "1") != "0"
+
+
+def set_notify_on_status_change_enabled(enabled):
+    set_setting(NOTIFY_ON_STATUS_CHANGE_SETTING, "1" if enabled else "0")

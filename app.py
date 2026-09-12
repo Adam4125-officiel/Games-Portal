@@ -21,6 +21,7 @@ import config
 import db
 import jellyfin_auth
 import scanner
+import status_portal_client
 import steam
 import updater
 
@@ -102,7 +103,8 @@ app.jinja_env.globals["csrf_token"] = _get_csrf_token
 @app.context_processor
 def _inject_globals():
     return {"user": session.get("portal_user"), "jellyfin_enabled": jellyfin_auth.is_enabled(),
-            "version_display": config.VERSION_DISPLAY, "repo_url": updater.REPO_URL}
+            "version_display": config.VERSION_DISPLAY, "repo_url": updater.REPO_URL,
+            "status_portal_links": db.list_status_portal_links()}
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +448,8 @@ def submit_request():
 
     db.create_request(summary["appid"], summary["name"], summary["icon_url"],
                        summary["short_description"], user["id"], user["name"])
+    if db.notify_on_new_request_enabled():
+        status_portal_client.notify_new_request(summary["name"], user["name"])
     flash(f'Requested "{summary["name"]}".', "success")
     return redirect(next_url)
 
@@ -604,7 +608,8 @@ def admin_requests():
 @app.route("/admin/requests/<int:request_id>/status", methods=["POST"])
 @login_required
 def admin_update_request(request_id):
-    if db.get_request(request_id) is None:
+    req_row = db.get_request(request_id)
+    if req_row is None:
         abort(404)
     status = request.form.get("status", "")
     note = request.form.get("admin_note", "").strip()[:500]
@@ -612,6 +617,8 @@ def admin_update_request(request_id):
         flash("Unknown status.", "error")
     else:
         db.update_request_status(request_id, status, note)
+        if status != req_row["status"] and db.notify_on_status_change_enabled():
+            status_portal_client.notify_status_changed(req_row["requested_by_id"], req_row["name"], status)
         flash("Request updated.", "success")
     return redirect(url_for("admin_requests", status=request.args.get("status", "")))
 
@@ -1166,6 +1173,118 @@ def admin_update():
 
 
 # ---------------------------------------------------------------------------
+# status-portal integration - health check (this app's key, status-portal
+# calls in) and the home links + notify settings (see status_portal_client.py
+# and db.py). Two separate keys, two separate directions - see CLAUDE.md.
+# ---------------------------------------------------------------------------
+@app.route("/health")
+def health():
+    """Unauthenticated except for the key itself - deliberately not behind
+    @login_required (this is status-portal's server calling in, not an admin
+    browser session) and not CSRF-checked (a GET, and this app's CSRF
+    protection only covers state-changing POSTs - see the top of this file).
+    secrets.compare_digest so a byte-by-byte string == doesn't leak timing
+    info about how much of the key matched."""
+    provided = request.headers.get("X-Api-Key", "")
+    expected = db.get_health_api_key()
+    if not expected or not secrets.compare_digest(provided, expected):
+        abort(401)
+    return {
+        "status": "ok",
+        "version": config.VERSION,
+        "pending_requests": db.count_unresolved_requests(),
+    }
+
+
+@app.route("/admin/integrations")
+@login_required
+def admin_integrations():
+    return render_template(
+        "admin_integrations.html", active="integrations",
+        health_api_key=db.get_or_create_health_api_key(),
+        links=db.list_status_portal_links(),
+        notify_url=db.get_status_portal_notify_url(),
+        notify_api_key=db.get_status_portal_notify_api_key(),
+        notify_on_new_request=db.notify_on_new_request_enabled(),
+        notify_on_status_change=db.notify_on_status_change_enabled(),
+    )
+
+
+@app.route("/admin/integrations/health-key/regenerate", methods=["POST"])
+@login_required
+def admin_integrations_regenerate_health_key():
+    db.regenerate_health_api_key()
+    flash("Health-check API key regenerated - update it on the status-portal side too.", "success")
+    return redirect(url_for("admin_integrations"))
+
+
+@app.route("/admin/integrations/links/add", methods=["POST"])
+@login_required
+def admin_integrations_add_link():
+    label = request.form.get("label", "").strip()[:100]
+    url = request.form.get("url", "").strip()[:500]
+    if not label or not url:
+        flash("Enter both a label and a URL.", "error")
+        return redirect(url_for("admin_integrations"))
+    db.add_status_portal_link(label, url)
+    flash(f'Added "{label}".', "success")
+    return redirect(url_for("admin_integrations"))
+
+
+@app.route("/admin/integrations/links/<int:link_id>/update", methods=["POST"])
+@login_required
+def admin_integrations_update_link(link_id):
+    if db.get_status_portal_link(link_id) is None:
+        abort(404)
+    label = request.form.get("label", "").strip()[:100]
+    url = request.form.get("url", "").strip()[:500]
+    if not label or not url:
+        flash("Enter both a label and a URL.", "error")
+        return redirect(url_for("admin_integrations"))
+    db.update_status_portal_link(link_id, label, url)
+    flash("Link updated.", "success")
+    return redirect(url_for("admin_integrations"))
+
+
+@app.route("/admin/integrations/links/<int:link_id>/delete", methods=["POST"])
+@login_required
+def admin_integrations_delete_link(link_id):
+    if db.get_status_portal_link(link_id) is None:
+        abort(404)
+    db.delete_status_portal_link(link_id)
+    flash("Link removed.", "success")
+    return redirect(url_for("admin_integrations"))
+
+
+@app.route("/admin/integrations/notify", methods=["POST"])
+@login_required
+def admin_integrations_notify_settings():
+    """Where this app sends POST /api/notify/admin and /api/notify/user
+    (status-portal's own key for those, not this app's /health key above),
+    and which of those two events are allowed to fire at all."""
+    db.set_status_portal_notify_url(request.form.get("notify_url", "").strip()[:500])
+    db.set_status_portal_notify_api_key(request.form.get("notify_api_key", "").strip()[:200])
+    db.set_notify_on_new_request_enabled(bool(request.form.get("notify_on_new_request")))
+    db.set_notify_on_status_change_enabled(bool(request.form.get("notify_on_status_change")))
+    flash("Notification delegation settings saved.", "success")
+    return redirect(url_for("admin_integrations"))
+
+
+@app.route("/admin/integrations/notify/test", methods=["POST"])
+@login_required
+def admin_integrations_notify_test():
+    """Fires a real, synchronous call through status_portal_client.py so an
+    admin finds out immediately whether the whole delegation chain actually
+    works, rather than only discovering it's broken when a real event fails
+    to notify anyone. Runs inline (not via the background queue) - a
+    deliberate, one-shot admin action, same sanctioned exception to the
+    no-slow-I/O rule as the scanner's "Scan now" button."""
+    result = status_portal_client.send_test_notification()
+    flash(result["message"], "success" if result["ok"] else "error")
+    return redirect(url_for("admin_integrations"))
+
+
+# ---------------------------------------------------------------------------
 # Restarting the process in place (used by admin_update above)
 # ---------------------------------------------------------------------------
 def _release_dev_server_socket():
@@ -1217,6 +1336,7 @@ if __name__ == "__main__":
     updater.check_pending_marker()
     updater.start_background_checker()
     scanner.start_background_scanner()
+    status_portal_client.start_background_worker()
     print(f"games-portal (dev) started on http://127.0.0.1:{config.PORT}")
     # debug=False deliberately: the Werkzeug reloader's WERKZEUG_SERVER_FD
     # handoff and this app's own os.execv()-based self-restart (see

@@ -2,6 +2,7 @@ import pytest
 
 import app as app_module
 import db
+import status_portal_client
 
 
 def _reset_module_state():
@@ -12,6 +13,12 @@ def _reset_module_state():
     app_module._login_state["locked_until"] = 0.0
     app_module._user_login_state["failures"] = 0
     app_module._user_login_state["locked_until"] = 0.0
+    # A real (unmocked) admin status-change or visitor request in one test
+    # enqueues a real job onto this module-level queue - left there, it's
+    # exactly the kind of stale state test_status_portal_client.py's own
+    # get_nowait() assertions would otherwise pick up from an unrelated test.
+    while not status_portal_client._queue.empty():
+        status_portal_client._queue.get_nowait()
 
 
 @pytest.fixture

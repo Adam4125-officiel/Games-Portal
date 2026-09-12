@@ -418,3 +418,105 @@ Confirmed stable from real end-to-end testing against a real deployment -
 the bar this repo's branching rule actually requires, not just passing
 tests. Merged to `main` with a regular merge commit (`8f69e36`), branch
 deleted both sides. Released as `v1.2.0`.
+
+## 2026-09-12 — status-portal integration: health check, home links, notification delegation - the first real joint cross-repo session
+
+The cross-repo item deferred in the 2026-09-11 entry above finally happened
+the way `ROADMAP.md` said it should: both repos' agents live at once,
+negotiating the actual contract and then testing against each other's real
+running instances, rather than one side guessing at the other's shape.
+
+What shipped: `GET /health` (`X-Api-Key`, generated/regenerated from
+`/admin/integrations`) for status-portal to monitor this app; one or more
+home links rendered permanently top-left of the page header; and
+`status_portal_client.py`, which hands a new request and a request's status
+change off to status-portal's `/api/notify/admin`/`/api/notify/user` instead
+of this app building its own Discord bot or email sender. See `CLAUDE.md`'s
+new "status-portal integration" section for the shape.
+
+**Connectivity for the real test:** GitHub Codespaces' own public port
+forwarding (`gh codespace ports visibility <port>:public`), not Tailscale -
+zero extra software, reversible in one command, good enough for a one-off
+test between two ephemeral dev instances. Each side exposed its own dev
+server this way, confirmed reachable through the actual public URL (not
+loopback) before testing anything real. Both ports were switched back to
+private once testing finished.
+
+**A real false negative caught and corrected mid-session, not just assumed
+fixed.** After the first live test, status-portal's session reported only
+its own internal test call had ever arrived - meaning delivery had
+apparently failed for both a real `/request` submission and a follow-up
+retry. Rather than accept that at face value or immediately assume a bug on
+either side, it was isolated methodically: a standalone `requests.post()`
+bypassing the app entirely, then this app's actual `_deliver()` function
+called directly, then two real requests submitted through the genuine
+`/request` route - four distinctly-worded test payloads in total, so each
+could be individually confirmed or denied on arrival. All four turned out to
+have landed; status-portal's session had misattributed a log line from its
+*previous* server process (before its own restart) to itself, and hadn't yet
+re-checked its current process's own log against the later calls. Re-checked
+properly, all four matched by timestamp. A genuine bug would have shown up
+as exactly two of the four (the ones going through this app's background
+queue+worker thread) missing while the two synchronous ones succeeded - they
+didn't, so the integration itself was never actually broken, only the first
+report of it.
+
+**What's verified, and how:** `pytest tests/` - 279 tests, including new
+coverage for `db.py`'s health-key/home-link/notify-setting functions,
+`/health` and `/admin/integrations`'s routes, and `status_portal_client.py`'s
+enqueue/delivery/failure-swallowing behavior. A live smoke test against a
+real running instance of *this* app (not status-portal's) covering admin
+first-run login, health-key generation, a real `/health` round trip through
+the actual public URL, adding a home link and confirming it renders, and a
+forced delivery failure against an unreachable notify URL confirmed logged
+and non-blocking without crashing the app. Playwright screenshots of
+`/admin/integrations` and the home-links header at 1280px and 375px in both
+themes, plus a separate pass explicitly checking for browser console/page
+errors (none) - the screenshot pass alone hadn't checked for those and was
+caught short before being called complete. And the real cross-repo round
+trip itself: a real request submitted through this app's actual `/request`
+route triggered a genuine `POST /api/notify/admin` that status-portal's own
+server received and logged; changing that request's status through the real
+admin route triggered a genuine `POST /api/notify/user` that status-portal
+resolved to a real seeded test account and attempted an actual SMTP send
+through its own delivery code, not a stub.
+
+**Not verified:** the SMTP send on status-portal's side actually succeeding -
+its dev sandbox has no real mail server configured, so the attempt failed
+only on that (expected, unrelated to this integration) and queued for retry
+per status-portal's own policy. A real Jellyfin server is also still not
+available in this environment, same gap noted in every earlier entry -
+visitor sign-in for the request-creation test was simulated by forging a
+valid Flask session cookie with this app's own secret key, not by signing in
+against a real Jellyfin instance.
+
+Released as `v1.3.0-rc.1`.
+
+### rc.2 — a "Send test notification" button and per-event on/off toggles
+
+Two follow-ups from Adam after trying rc.1, relayed through status-portal's
+session (still acting as orchestrator for this batch), same PR/branch:
+
+- **"Send test notification"** on `/admin/integrations` fires one real,
+  synchronous call through `status_portal_client.send_test_notification()`
+  and flashes the actual result - success, "not configured," a non-2xx
+  response, or a network error verbatim - so an admin finds out immediately
+  whether the whole chain works instead of only when a real request fails to
+  notify anyone. Deliberately synchronous, unlike every other call in this
+  module: a sanctioned exception to the no-slow-I/O rule, same as the
+  scanner's "Scan now" button.
+- **Per-event toggles** (`notify_on_new_request`, `notify_on_status_change`,
+  both DB settings defaulting to enabled) let an admin turn either event off
+  independently, without touching the notify URL/key. An unchecked
+  checkbox sends no form field at all, which has to be read as "off," not
+  silently ignored - covered by
+  `test_admin_integrations_saves_notify_settings_with_both_toggles_off`.
+
+`pytest tests/` - 291 tests. Playwright screenshots of the updated
+`/admin/integrations` page at 1280px/375px in both themes, plus an explicit
+console/page-error check (none) - same as rc.1's own UI pass. A live smoke
+test against a running instance covered both the "not configured" and a real
+network-failure message on the test button, and confirmed the two toggles
+persist independently in both directions.
+
+Released as `v1.3.0-rc.2`.

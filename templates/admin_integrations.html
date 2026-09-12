@@ -1,0 +1,139 @@
+{% extends "admin_base.html" %}
+{% block title %}Integrations — Admin{% endblock %}
+{% block admin_body %}
+  <div class="topbar">
+    <div>
+      <div class="topbar__brand">Integrations</div>
+      <div class="topbar__sub">status-portal - this server's home, health checks, and notification delivery</div>
+    </div>
+    <a class="btn secondary" href="{{ url_for('index') }}">← Back to search</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="panel">
+    <h2>Health check</h2>
+    <p class="dim">
+      Lets status-portal monitor this app. It calls <code>GET /health</code> with this key in an
+      <code>X-Api-Key</code> header and gets back <code>{"status","version","pending_requests"}</code>.
+      Hand the key below to status-portal's admin - it's separate from the notification key below.
+    </p>
+    <div class="field">
+      <label for="health_api_key">API key</label>
+      <input type="text" id="health_api_key" value="{{ health_api_key }}" readonly onclick="this.select()">
+    </div>
+    <form method="POST" action="{{ url_for('admin_integrations_regenerate_health_key') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary"
+              data-confirm="Regenerate the health-check key? status-portal's copy of the old key will stop working until you update it there too.">
+        Regenerate
+      </button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Home links</h2>
+    <p class="dim">
+      Shown permanently in the top-left of the main page, for however this server's admin (or
+      visitors) reach status-portal - LAN, Tailscale, a public URL, whatever applies. Nothing is
+      shown if none are configured.
+    </p>
+
+    {% if links %}
+      <div class="request-list">
+        {% for l in links %}
+          <div class="request-row">
+            <form class="request-row__form" method="POST"
+                  action="{{ url_for('admin_integrations_update_link', link_id=l.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="label" placeholder="Label" value="{{ l.label }}" required>
+              <input type="text" name="url" placeholder="https://…" value="{{ l.url }}" required>
+              <button type="submit" class="btn small">Save</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_integrations_delete_link', link_id=l.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn small danger"
+                      data-confirm="Remove the &quot;{{ l.label }}&quot; link?">Remove</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty-state">No links configured yet - add one below.</p>
+    {% endif %}
+
+    <h3 class="panel__subhead">Add a link</h3>
+    <form method="POST" action="{{ url_for('admin_integrations_add_link') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="label">Label</label>
+        <input type="text" name="label" id="label" placeholder="LAN, Tailscale, Public…" maxlength="100" required>
+      </div>
+      <div class="field">
+        <label for="url">URL</label>
+        <input type="text" name="url" id="url" placeholder="https://status.example.com" maxlength="500" required>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Add</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Notification delegation</h2>
+    <p class="dim">
+      Instead of this app building its own Discord bot or email sender, a new request and a
+      request status change are POSTed to status-portal, which delivers them however it's already
+      configured to. This URL and key are issued by status-portal, in the opposite direction from
+      the health key above - keep them separate.
+    </p>
+    <form method="POST" action="{{ url_for('admin_integrations_notify_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="notify_url">status-portal URL</label>
+        <input type="text" name="notify_url" id="notify_url" value="{{ notify_url }}"
+               placeholder="https://status.example.com" maxlength="500">
+        <p class="field-hint">The server-to-server address this app's backend can reach directly -
+          usually the LAN one, not necessarily the same URL shown to visitors above.</p>
+      </div>
+      <div class="field">
+        <label for="notify_api_key">API key (from status-portal)</label>
+        <input type="text" name="notify_api_key" id="notify_api_key" value="{{ notify_api_key }}" maxlength="200">
+      </div>
+      <div class="field-check">
+        <input type="checkbox" name="notify_on_new_request" id="notify_on_new_request"
+               {{ 'checked' if notify_on_new_request }}>
+        <label for="notify_on_new_request">Notify on a new request (admin alert)</label>
+      </div>
+      <div class="field-check">
+        <input type="checkbox" name="notify_on_status_change" id="notify_on_status_change"
+               {{ 'checked' if notify_on_status_change }}>
+        <label for="notify_on_status_change">Notify on a request's status changing (per-requester alert)</label>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+    <p class="field-hint">
+      Leave the URL or key blank to disable delegation entirely - nothing is sent, and nothing
+      breaks, same as before this was configured. Unchecking one of the events above disables just
+      that one; the other keeps working.
+    </p>
+
+    <h3 class="panel__subhead">Test it</h3>
+    <p class="dim">
+      Sends one real notification through the chain above right now, so you find out immediately if
+      it's broken instead of only when a real request comes in.
+    </p>
+    <form method="POST" action="{{ url_for('admin_integrations_notify_test') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn secondary">Send test notification</button>
+    </form>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/admin_confirm.js') }}"></script>
+{% endblock %}
