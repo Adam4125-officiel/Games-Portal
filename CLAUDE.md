@@ -54,6 +54,41 @@ scanner" section for the tag format. Don't relitigate these; if a genuinely
 new open decision comes up while building, it goes in `ROADMAP.md` the same
 way, confirmed with the user first rather than picked silently.
 
+## status-portal integration
+
+Three pieces, all confirmed working against status-portal's own real running
+instance in a live joint session (both repos' agents up at once, coordinating
+directly) - see `docs/HISTORY.md`'s 2026-09-12 entry for the full story,
+including a real false-negative bug caught and corrected mid-session.
+
+- **`GET /health`** - requires `X-Api-Key`, 401 if missing/wrong, otherwise
+  always `{"status": "ok", "version": "<VERSION>", "pending_requests": <int>}`.
+  The key is generated (view/regenerate) from `/admin/integrations` and
+  handed to status-portal by hand.
+- **Home links** - one or more (label, URL) pairs pointing at status-portal,
+  managed from `/admin/integrations`, rendered permanently top-left of the
+  page header on every page (`.home-links` in `style.css`, the mirror image
+  of `.page-actions`'s top-right positioning). Nothing shown if none
+  configured.
+- **Notification delegation** (`status_portal_client.py`) - a new request
+  and a request's status changing are handed off to status-portal's own
+  `POST /api/notify/admin`/`POST /api/notify/user` instead of this app
+  running a Discord bot or email sender of its own. An in-memory queue plus
+  one background worker thread (`start_background_worker()`, same
+  started-once-guard shape as `scanner.start_background_scanner()`) makes
+  every call instant from the request handler's side - a slow or unreachable
+  status-portal is logged and dropped, never surfaced to the admin or
+  requester. The per-user call is skipped entirely when a request has no
+  `requested_by_id` (an anonymous request never had one to begin with).
+
+Two separate API keys, opposite directions, never reused for anything else:
+the health-check key is generated *by this app* and handed to status-portal;
+the notify key is issued *by status-portal* and pasted in here. Both are DB
+settings, editable live from `/admin/integrations`, no restart needed.
+
+Deferred out of this batch on both sides: a Discord DM to the individual
+requester (status-portal has no Discord column wired for this event yet).
+
 ## Visual identity — same as status-portal, don't design a new one
 
 status-portal's look ("network control room / monitoring rack") carries over as-is.
@@ -194,6 +229,7 @@ change touches anything color-related.
     updater.py               # self-update: check/download/verify/backup/replace/rollback
     update.py                # CLI wrapper around updater.py, usable when the web UI is broken
     scanner.py               # games-folder scan + tag/fuzzy matching, installed_games table
+    status_portal_client.py  # notify delegation to status-portal, background worker thread
     requirements.txt / requirements-dev.txt
     .env.example
     Dockerfile / docker-compose.yml / .dockerignore
