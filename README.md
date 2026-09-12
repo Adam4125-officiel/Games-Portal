@@ -181,6 +181,13 @@ From **Integrations** in the admin nav (`/admin/integrations`):
   surfaced as an error to the admin or the requester. The URL and API key
   here are issued by status-portal - the opposite direction from, and kept
   separate from, the health-check key above.
+- **Per-event toggles**: new-request and status-change notifications can
+  each be switched off independently, without clearing the URL/key - both
+  default to enabled.
+- **Send test notification**: fires one real, synchronous call through the
+  chain above and reports the actual result, so a broken connection to
+  status-portal is obvious immediately rather than only discovered when a
+  real request fails to notify anyone.
 
 ## Visual style
 
