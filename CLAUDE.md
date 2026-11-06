@@ -146,6 +146,13 @@ bisect`/`git revert`), then delete the branch. Doc-only edits (`CLAUDE.md`,
 `ROADMAP.md`, `docs/HISTORY.md`) can go straight to `main` if no branch is
 currently open; if one is open, they ride along on it instead.
 
+**The production server listens on IPv4 *and* IPv6** (`serve_waitress.build_server()`).
+Don't put it back to `serve(host="0.0.0.0")`: on Windows a client connecting to
+`localhost` tries `::1` first and waits ~2s on a refused connection, which made
+every status-portal check read ~2000 ms / `slow` while the page felt instant in a
+browser (`docs/HISTORY.md`, 2026-11-06). The IPv4-only fallback is for hosts with
+IPv6 off and is decided by a probe socket, never by retrying `create_server()`.
+
 **Commit cadence: one commit per completed fix, not one per session.** "Complete"
 means it works and its tests pass — don't batch a whole session into one commit,
 and don't hold everything back for one tidy final commit.
