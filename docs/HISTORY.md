@@ -5,6 +5,36 @@ verified against a real deployment (and when). Rules belong in `CLAUDE.md`; the
 stories behind them belong here. When `CLAUDE.md` gains a rule because something
 broke, it links to the write-up here instead of retelling it inline.
 
+
+## 2026-11-06 — Every status-portal check took a flat ~2 seconds (IPv4-only listener)
+
+Status-portal showed Games Portal's response time pinned at about 2000 ms and
+marked it `slow` on every cycle, while the page opened instantly in a browser.
+The app wasn't slow: a scratch instance answered `/` and `/health` in 2-15 ms.
+The time was spent *connecting*. `serve_waitress.py` called
+`serve(host="0.0.0.0")`, so it only listened on IPv4. On Windows `localhost` (and
+the machine's own hostname) resolve to IPv6 first; nothing answered on `::1`, and
+Windows retries a refused TCP connection for about two seconds before
+`requests`/urllib3 moves on to `127.0.0.1`. Status-portal times the whole
+`requests.get()`, connect included, so it measured those two seconds faithfully.
+A browser races both address families (Happy Eyeballs), which is why nobody saw it
+by hand. Every other service on the same check list is fast because it listens
+on both families.
+
+Fix: `serve_waitress.build_server()` listens on `0.0.0.0:<port>` and
+`[::]:<port>` (waitress sets `IPV6_V6ONLY`, so the two don't collide), and falls
+back to IPv4 only with a warning when `[::]` can't be bound (IPv6 disabled, some
+containers). That decision is made by probing a throwaway IPv6 socket first. The
+alternative, catching `create_server()`'s failure and retrying, would leave its
+already-bound IPv4 socket listening and make the retry fail with "address in use".
+
+Verified here (Linux): the real `serve_waitress.py` on a scratch DB listened on
+both families, and `requests.get` answered in 3-17 ms for `localhost`,
+`127.0.0.1` and `[::1]`. `tests/test_serve_waitress.py` fails against the old
+IPv4-only listener. **The Windows 2-second retry itself can't be reproduced on
+Linux** (a refused connection fails instantly here), so the actual drop from
+~2000 ms on the real status-portal page still needs confirming on the real host.
+
 ## 2026-09-10 — Self-update system ported from status-portal; caught a real archive-validation gap and a private-repo blocker along the way
 
 Added `updater.py`/`update.py` - check GitHub for a newer release, download and
