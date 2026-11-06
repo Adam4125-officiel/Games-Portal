@@ -35,6 +35,10 @@ IPv4-only listener. **The Windows 2-second retry itself can't be reproduced on
 Linux** (a refused connection fails instantly here), so the actual drop from
 ~2000 ms on the real status-portal page still needs confirming on the real host.
 
+**Confirmed on the real host the same day:** after installing `v1.3.1-rc.1`,
+status-portal shows Games Portal at about 5 ms instead of ~2000 ms. Released as
+stable `v1.3.1`.
+
 ## 2026-09-10 — Self-update system ported from status-portal; caught a real archive-validation gap and a private-repo blocker along the way
 
 Added `updater.py`/`update.py` - check GitHub for a newer release, download and
